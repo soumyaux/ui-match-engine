@@ -20,6 +20,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: 👀 Check Figma Inputs
+        run: |
+          echo "Target URL: ${{ github.event.inputs.url }}"
+          echo "Design Tokens: ${{ github.event.inputs.designTokens }}"
       - name: Install & Run
         run: |
           npm install playwright
