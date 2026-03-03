@@ -1,13 +1,16 @@
-name: UI Match Visual Audit
+name: UI Match Audit
+
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'Target URL'
+        description: 'The target URL to audit'
         required: true
+        type: string
       designTokens:
-        description: 'Figma JSON'
+        description: 'The JSON payload from Figma'
         required: true
+        type: string
 
 jobs:
   audit:
