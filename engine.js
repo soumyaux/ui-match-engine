@@ -1,7 +1,6 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 
-// 1. Create the report folder immediately
 if (!fs.existsSync('playwright-report')){
     fs.mkdirSync('playwright-report');
 }
@@ -12,62 +11,72 @@ async function runAudit() {
     const targetUrl = process.env.TARGET_URL;
     const figmaTokens = JSON.parse(process.env.TOKENS);
 
-    console.log(`🌸 Starting Soothing Visual Audit for: ${targetUrl}`);
+    console.log(`🌸 Starting Deep Visual Scan for: ${targetUrl}`);
 
     browser = await chromium.launch();
     const page = await browser.newPage();
-
-    console.log("🌍 Navigating to site...");
     await page.goto(targetUrl, { waitUntil: 'networkidle' });
 
-    // --- 2. THE AUDIT & VISUAL MARKING LOGIC ---
-    console.log("🔍 Comparing Figma tokens and drawing highlights...");
+    console.log("🔍 Scanning ALL elements on the page...");
+    
     const report = await page.evaluate((design) => {
-      // Find the element on the live site
-      const element = document.querySelector(`[data-testid="${design.name}"]`) || document.querySelector('button, h1, a');
+      // 1. USE QUERY SELECTOR ALL: Find EVERY matching element on the page
+      let elements = Array.from(document.querySelectorAll(`[data-testid="${design.name}"]`));
       
-      if (!element) return { match: false, reason: `Element '${design.name}' not found on live site` };
-
-      // Get live styles
-      const liveStyle = window.getComputedStyle(element);
-      const liveColor = liveStyle.backgroundColor; 
-      
-      // Safeguard color data and perform Figma (0-1) to Web (0-255) conversion
-      if (!design.color) return { match: false, reason: "Figma did not send color data" };
-      const designColor = `rgb(${Math.round(design.color.r * 255)}, ${Math.round(design.color.g * 255)}, ${Math.round(design.color.b * 255)})`;
-
-      const isMatch = liveColor === designColor;
-
-      // ==========================================
-      // 🚨 NEW: THE VISUAL MARKING 🚨
-      // If it's NOT a match, draw a bright red box on the DOM
-      // ==========================================
-      if (!isMatch) {
-        element.style.outline = '5px solid red'; // The Red Square
-        element.style.outlineOffset = '2px';    // Space out the square
-        element.style.boxShadow = '0 0 10px rgba(255, 0, 0, 0.7)'; // Add a glow so you can't miss it!
-      } else {
-        // Optional: Mark passing elements in green?
-        // element.style.outline = '5px solid #10B981';
+      // Fallback: If no test-id is found, grab all buttons/links to check them
+      if (elements.length === 0) {
+        elements = Array.from(document.querySelectorAll('button, .btn, a')); 
       }
 
-      return {
-        elementName: design.name,
-        match: isMatch,
-        liveColor,
-        designColor,
-        score: isMatch ? 100 : 40
-      };
+      let scanResults = [];
+      let expectedBg = null;
+
+      // Format the expected Figma color
+      if (design.color) {
+        expectedBg = `rgb(${Math.round(design.color.r * 255)}, ${Math.round(design.color.g * 255)}, ${Math.round(design.color.b * 255)})`;
+      }
+
+      // 2. LOOP THROUGH EVERY ELEMENT
+      elements.forEach((el, index) => {
+        const liveStyle = window.getComputedStyle(el);
+        let errors = [];
+
+        // Check Background Color (ignoring transparent backgrounds)
+        if (expectedBg && liveStyle.backgroundColor !== expectedBg && liveStyle.backgroundColor !== 'rgba(0, 0, 0, 0)') {
+           errors.push(`Found: ${liveStyle.backgroundColor}`);
+        }
+
+        // Check Font Size (If your Figma plugin sends it!)
+        if (design.fontSize && liveStyle.fontSize !== `${design.fontSize}px`) {
+           errors.push(`Font: ${liveStyle.fontSize}`);
+        }
+
+        // 3. IF THERE ARE ERRORS, DRAW THE RED BOX AND LABEL
+        if (errors.length > 0) {
+          // Draw the Box
+          el.style.outline = '4px solid red';
+          el.style.outlineOffset = '2px';
+          el.style.boxShadow = '0 0 15px rgba(255,0,0,0.8)';
+
+          // Create the floating error label
+          const label = document.createElement('div');
+          label.innerText = `❌ ${errors.join(' | ')}`;
+          label.style.cssText = 'position: absolute; background: red; color: white; font-family: monospace; font-size: 10px; padding: 4px; border-radius: 4px; z-index: 99999; margin-top: -25px; pointer-events: none;';
+          
+          if (el.parentNode) {
+            el.parentNode.insertBefore(label, el);
+          }
+        }
+
+        scanResults.push({ id: index, match: errors.length === 0, errors });
+      });
+
+      return scanResults;
     }, figmaTokens);
 
-    // --- 3. TAKE THE VISUAL SNAPSHOT ---
-    // This happens AFTER we drew the red boxes in Step 2.
-    console.log("📸 Snapping the highlighted screenshot...");
+    console.log("📸 Snapping the Deep Scan screenshot...");
     await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
 
-    console.log("📊 Audit Results:", report);
-    
-    // Save the text report too
     fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(report, null, 2));
     
   } catch (error) {
