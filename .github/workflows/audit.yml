@@ -17,27 +17,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          
       - name: 👀 Check Figma Inputs
         run: |
           echo "Target URL: ${{ github.event.inputs.url }}"
           echo "Design Tokens: ${{ github.event.inputs.designTokens }}"
-      - name: Install & Run
+          
+      - name: Install & Run Engine
         run: |
           npm install playwright
           npx playwright install --with-deps chromium
           node engine.js
-      # ... (your existing steps that run the audit) ...
-
-      - name: 📸 Upload Visual Audit Report
-        uses: actions/upload-artifact@v4
-        if: always() # This ensures it uploads even if the audit finds errors!
-        with:
-          name: UI-Match-Visual-Report
-          path: playwright-report/ # Change this if your report saves to a different folder!
-          retention-days: 7
+        # 🚨 MOVED THIS HERE: Now engine.js can read the tokens! 🚨
         env:
           TARGET_URL: ${{ github.event.inputs.url }}
           TOKENS: ${{ github.event.inputs.designTokens }}
+
+      - name: 📸 Upload Visual Audit Report
+        uses: actions/upload-artifact@v4
+        if: always() # Uploads even if the test fails (which is what we want for diffs!)
+        with:
+          name: UI-Match-Visual-Report
+          path: playwright-report/ # Make sure engine.js saves images here!
+          retention-days: 7
