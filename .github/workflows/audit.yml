@@ -29,6 +29,15 @@ jobs:
           npm install playwright
           npx playwright install --with-deps chromium
           node engine.js
+      # ... (your existing steps that run the audit) ...
+
+      - name: 📸 Upload Visual Audit Report
+        uses: actions/upload-artifact@v4
+        if: always() # This ensures it uploads even if the audit finds errors!
+        with:
+          name: UI-Match-Visual-Report
+          path: playwright-report/ # Change this if your report saves to a different folder!
+          retention-days: 7
         env:
           TARGET_URL: ${{ github.event.inputs.url }}
           TOKENS: ${{ github.event.inputs.designTokens }}
