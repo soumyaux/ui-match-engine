@@ -1,28 +1,32 @@
 const { chromium } = require('playwright');
-const fs = require('fs'); // Added to help save the report files
+const fs = require('fs');
+
+// 1. Create the folder IMMEDIATELY so GitHub always finds it
+if (!fs.existsSync('playwright-report')) {
+    fs.mkdirSync('playwright-report');
+}
 
 async function runAudit() {
-  const targetUrl = process.env.TARGET_URL;
-  const figmaTokens = JSON.parse(process.env.TOKENS);
-
-  console.log(`🌸 Starting Soothing Audit for: ${targetUrl}`);
-
-  const browser = await chromium.launch();
-  const page = await browser.newPage();
-
-  // Create the report folder so GitHub Actions can find it later
-  if (!fs.existsSync('playwright-report')){
-      fs.mkdirSync('playwright-report');
-  }
-
+  let browser;
   try {
-    await page.goto(targetUrl);
-    
-    // 📸 TAKE A VISUAL SCREENSHOT
+    const targetUrl = process.env.TARGET_URL;
+    console.log(`🌸 Starting Soothing Audit for: ${targetUrl}`);
+
+    // Check if data actually arrived
+    if (!process.env.TOKENS) throw new Error("No tokens received from GitHub environment!");
+    const figmaTokens = JSON.parse(process.env.TOKENS);
+
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+
+    console.log("🌍 Navigating to site...");
+    // Force wait until network is mostly idle to ensure CSS loads
+    await page.goto(targetUrl, { waitUntil: 'networkidle' });
+
     console.log("📸 Snapping a screenshot of the live site...");
     await page.screenshot({ path: 'playwright-report/live-site-screenshot.png', fullPage: true });
 
-    // THE AUDIT LOGIC:
+    console.log("🔍 Running color match logic...");
     const report = await page.evaluate((design) => {
       const element = document.querySelector(`[data-testid="${design.name}"]`) || document.querySelector('button, h1, a');
       
@@ -31,9 +35,10 @@ async function runAudit() {
       const liveStyle = window.getComputedStyle(element);
       const liveColor = liveStyle.backgroundColor; 
       
-      // Note: If your Figma plugin sends colors as 0-1 (e.g., r: 1, g: 0.5), 
-      // you might need to multiply by 255 here to match the live site's rgb(255, 128, 0) format!
-      const designColor = `rgb(${Math.round(design.color.r)}, ${Math.round(design.color.g)}, ${Math.round(design.color.b)})`;
+      // Safeguard against missing color data from Figma
+      if (!design.color) return { match: false, reason: "Figma did not send color data" };
+
+      const designColor = `rgb(${Math.round(design.color.r * 255)}, ${Math.round(design.color.g * 255)}, ${Math.round(design.color.b * 255)})`;
 
       return {
         match: liveColor === designColor,
@@ -41,17 +46,19 @@ async function runAudit() {
         designColor,
         score: liveColor === designColor ? 100 : 40
       };
-    }, figmaTokens); // 🚨 BUG FIXED: Changed 'tokens' to 'figmaTokens'
+    }, figmaTokens);
 
     console.log("📊 Audit Results:", report);
     
-    // 💾 SAVE THE TEXT REPORT FOR THE ARTIFACT
+    // Save the success report!
     fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(report, null, 2));
     
   } catch (error) {
-    console.error("❌ Audit failed:", error);
+    console.error("❌ Audit crashed:", error.message);
+    // 🚑 SAVE THE ERROR TO THE FOLDER SO IT UPLOADS AS AN ARTIFACT
+    fs.writeFileSync('playwright-report/error-log.txt', `Crash Report:\n${error.stack}`);
   } finally {
-    await browser.close();
+    if (browser) await browser.close();
   }
 }
 
