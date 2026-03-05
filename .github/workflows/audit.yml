@@ -4,13 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'The target URL to audit'
+        description: 'Website URL to audit'
         required: true
-        type: string
       designTokens:
-        description: 'The JSON payload from Figma'
+        description: 'JSON string of Figma tokens'
+        required: false
+      # 🚨 ADD THIS BLOCK: Tell GitHub to expect the sessionId
+      sessionId:
+        description: 'Unique ID for the scan'
         required: true
-        type: string
 
 jobs:
   audit:
