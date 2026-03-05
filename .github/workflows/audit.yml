@@ -48,7 +48,7 @@ jobs:
 
           # 2. Upload that zip file directly to your Supabase bucket
           curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/latest-scan.zip" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/zip" \
             -H "x-upsert: true" \
             --data-binary @"./latest-scan.zip"
