@@ -48,7 +48,19 @@ if (matchResults.score < 60) {
     // This prevents the 'Upload to Supabase' step from starting
     process.exit(1); 
 }
+// At the top of your audit script
+let tokens;
+try {
+    // If it's a string from the Worker, parse it. If it's already an object, use it.
+    tokens = typeof figmaTokens === 'string' ? JSON.parse(figmaTokens) : figmaTokens;
+} catch (e) {
+    console.error("Token parsing failed:", e);
+    tokens = [];
+}
 
+tokens.forEach(token => {
+  // Use data attributes or sanitize names to avoid "Frame 1" selector errors
+});
         // --- PHASE 2: DEEP AUDIT (Only runs if score >= 60%) ---
         console.log("🚀 Match confirmed! Starting deep-scan audit...");
 
