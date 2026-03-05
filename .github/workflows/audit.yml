@@ -11,7 +11,7 @@ on:
         required: false
         default: '{}'
       sessionId:
-        description: 'Session ID'
+        description: 'Unique ID'
         required: false
         default: 'manual-scan'
 
