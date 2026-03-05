@@ -43,7 +43,7 @@ jobs:
       # 🚨 NEW STEP: Zip the Playwright report and push to Supabase
       # 🚨 UPATED: Using the correct SUPABASE_SERVICE_ROLE_KEY
       - name: 📸 Upload Visual Audit Report to Supabase
-        if: always() 
+        if: always()
         env:
           # 🚨 Use .inputs. because your Worker uses 'workflow_dispatch'
           SESSION_ID: ${{ github.event.inputs.sessionId }}
@@ -54,8 +54,9 @@ jobs:
           cd playwright-report
           zip -r ../$FILENAME ./*
           cd ..
-
-          curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit/$FILENAME" \
+          
+          # Updated to audit-results
+          curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/$FILENAME" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/zip" \
             -H "x-upsert: true" \
