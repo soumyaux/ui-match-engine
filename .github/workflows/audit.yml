@@ -41,10 +41,16 @@ jobs:
       # 🚨 UPATED: Using the correct SUPABASE_SERVICE_ROLE_KEY
       - name: 📸 Upload Visual Audit Report to Supabase
         if: always() 
+        env:
+          # Mapping the payload to a simple variable
+          SESSION_ID: ${{ github.event.client_payload.sessionId }}
         run: |
-          # Use the sessionId passed from the plugin/worker as the filename
-          FILENAME="${{ github.event.client_payload.sessionId }}.zip"
+          # Use 'manual_run' if the SESSION_ID comes back empty
+          FINAL_ID="${SESSION_ID:-manual_run}"
+          FILENAME="${FINAL_ID}.zip"
           
+          echo "Processing scan for: $FINAL_ID"
+
           cd playwright-report
           zip -r ../$FILENAME ./*
           cd ..
