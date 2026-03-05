@@ -38,15 +38,19 @@ jobs:
           TOKENS: ${{ github.event.inputs.designTokens }}
 
       # 🚨 NEW STEP: Zip the Playwright report and push to Supabase
+      # 🚨 UPATED: Using the correct SUPABASE_SERVICE_ROLE_KEY
       - name: 📸 Upload Visual Audit Report to Supabase
-        if: always() # We keep this so it uploads even if the UI scan finds errors!
+        if: always() 
         run: |
-          # 1. Zip the Playwright report folder into a single file
+          # 1. Print the error log to the GitHub screen so we can read it!
           cd playwright-report
+          cat error-log.txt || true 
+          
+          # 2. Zip the folder
           zip -r ../latest-scan.zip ./*
           cd ..
 
-          # 2. Upload that zip file directly to your Supabase bucket
+          # 3. Upload to Supabase
           curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/latest-scan.zip" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/zip" \
