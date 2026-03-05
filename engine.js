@@ -20,12 +20,19 @@ async function runAudit() {
     console.log("🔍 Scanning ALL elements on the page...");
     
     const report = await page.evaluate((design) => {
-      // 1. Better Selector: Look for data-testid, name, or common components
-      let elements = Array.from(document.querySelectorAll(`[data-testid="${design.name}"], [name="${design.name}"], .${design.name}`));
+  // 1. 🚨 THE FIX: Escape the name or handle spaces for CSS selectors
+  // We use CSS.escape() to make sure "Frame 1" doesn't break the query
+  const escapedName = CSS.escape(design.name);
+  
+  // Also create a class-friendly version by replacing spaces with dots for multi-class support
+  const classSelector = design.name.replace(/\s+/g, '.');
+      let elements = Array.from(document.querySelectorAll(
+    `[data-testid="${design.name}"], [name="${design.name}"], .${escapedName}, .${classSelector}`
+  ));
       
       if (elements.length === 0) {
-        elements = Array.from(document.querySelectorAll('button, a, h1, h2, p, .input')); 
-      }
+    elements = Array.from(document.querySelectorAll('button, a, h1, h2, p, .input')); 
+  }
 
       let scanResults = [];
 
