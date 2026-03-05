@@ -6,12 +6,22 @@ if (!fs.existsSync('playwright-report')) {
 }
 
 async function runAudit() {
-    let browser;
+  let browser;
+  try {
+    const targetUrl = process.env.TARGET_URL;
+    
+    // 🚨 THE FIX: Ensure tokens is parsed as an Array
+    let figmaTokens = [];
     try {
-        const targetUrl = process.env.TARGET_URL;
-        const figmaTokens = JSON.parse(process.env.TOKENS);
+        const parsed = JSON.parse(process.env.TOKENS);
+        // If it's a single layer object, wrap it in []. If it's already a list, use it.
+        figmaTokens = Array.isArray(parsed) ? parsed : [parsed];
+    } catch (e) {
+        console.error("Failed to parse TOKENS. Check your GitHub Action inputs.");
+        figmaTokens = [];
+    }
 
-        console.log(`🌸 Starting Deep Visual Scan for: ${targetUrl}`);
+    console.log(`🌸 Starting Deep Visual Scan for: ${targetUrl}`);
 
         browser = await chromium.launch();
         const page = await browser.newPage();
