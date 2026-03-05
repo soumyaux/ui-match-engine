@@ -12,16 +12,16 @@ jobs:
       - name: Purge all files in audit-results bucket
         run: |
           # 1. Fetch the list
-          RESPONSE=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/storage/v1/object/list/audit-results" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+          RESPONSE=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/storage/v1/object/list/audit" \
+            -H "Authorisation: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json")
 
           echo "Response from Supabase: $RESPONSE"
 
           # 2. 🚨 THE FIX: Check if the bucket exists before using jq
           if [[ $RESPONSE == *"Bucket not found"* ]]; then
-            echo "❌ ERROR: The bucket 'audit-results' was not found in Supabase."
-            echo "Check if the bucket name is exactly 'audit-results' in your dashboard."
+            echo "❌ ERROR: The bucket 'audit' was not found in Supabase."
+            echo "Check if the bucket name is exactly 'audit' in your dashboard."
             exit 1
           fi
 
@@ -31,7 +31,7 @@ jobs:
           # 4. Conditional Delete
           if [ "$FILE_NAMES" != "[]" ] && [ "$FILE_NAMES" != "" ]; then
             echo "Deleting: $FILE_NAMES"
-            curl -s -X DELETE "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results" \
+            curl -s -X DELETE "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit" \
               -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
               -H "Content-Type: application/json" \
               -d "{\"prefixes\": $FILE_NAMES}"
