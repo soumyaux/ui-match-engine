@@ -11,24 +11,24 @@ jobs:
     steps:
       - name: Purge all files in audit-results bucket
         run: |
-          # 1. Fetch the list (Updated to audit-results and 'Authorization' fixed)
-          RESPONSE=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/storage/v1/object/list/audit-results" \
+          # 1. 🚨 THE FIX: POST request with prefix payload
+          RESPONSE=$(curl -s -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/list/audit-results" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-            -H "Content-Type: application/json")
+            -H "Content-Type: application/json" \
+            -d '{"prefix": ""}')
 
           echo "Response from Supabase: $RESPONSE"
 
-          # 2. Check if the bucket exists before using jq
-          if [[ $RESPONSE == *"Bucket not found"* ]]; then
-            echo "❌ ERROR: The bucket 'audit-results' was not found in Supabase."
-            echo "Check if the bucket name is exactly 'audit-results' in your dashboard."
+          # 2. Check for API errors before using jq
+          if [[ "$RESPONSE" == *"error"* ]]; then
+            echo "❌ ERROR: Supabase returned an error: $RESPONSE"
             exit 1
           fi
 
-          # 3. Safe extraction
-          FILE_NAMES=$(echo $RESPONSE | jq -c '[.[] | .name] | select(. != null)')
+          # 3. Safe extraction of filenames
+          FILE_NAMES=$(echo "$RESPONSE" | jq -c '[.[] | .name] | select(. != null)')
 
-          # 4. Conditional Delete (Updated to audit-results)
+          # 4. Conditional Delete
           if [ "$FILE_NAMES" != "[]" ] && [ "$FILE_NAMES" != "" ]; then
             echo "Deleting: $FILE_NAMES"
             curl -s -X DELETE "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results" \
