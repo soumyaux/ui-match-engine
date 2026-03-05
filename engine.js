@@ -27,38 +27,27 @@ async function runAudit() {
         await page.goto(targetUrl, { waitUntil: 'networkidle' });
 
         // --- PHASE 1: COMPATIBILITY CHECK ---
-        console.log("🔍 Running 60% Compatibility Check...");
-        const matchResults = await page.evaluate((tokens) => {
-            let matchCount = 0;
-            tokens.forEach(design => {
-                const escaped = CSS.escape(design.name);
-                const exists = document.querySelector(`[data-testid="${design.name}"], [name="${design.name}"], .${escaped}`);
-                if (exists) matchCount++;
-            });
-            return {
-                score: (matchCount / tokens.length) * 100,
-                total: tokens.length,
-                matched: matchCount
-            };
-        }, figmaTokens);
+console.log("🔍 Running 60% Compatibility Check...");
+const matchResults = await page.evaluate((tokens) => {
+    let matchCount = 0;
+    tokens.forEach(design => {
+        const escaped = CSS.escape(design.name);
+        const exists = document.querySelector(`[data-testid="${design.name}"], [name="${design.name}"], .${escaped}`);
+        if (exists) matchCount++;
+    });
+    return {
+        score: (matchCount / tokens.length) * 100,
+        total: tokens.length,
+        matched: matchCount
+    };
+}, figmaTokens);
 
-        console.log(`📊 Compatibility Score: ${matchResults.score.toFixed(2)}% (${matchResults.matched}/${matchResults.total})`);
-
-        // --- THE GATEKEEPER ---
-        if (matchResults.score < 60) {
-            console.log("⚠️ Match score below 60%. Aborting deep audit to prevent false reports.");
-            
-            // Generate a 'Skip' report
-            const skipReport = [{ 
-                element: "System Check", 
-                status: "ABORTED", 
-                details: [`Compatibility Score (${matchResults.score.toFixed(2)}%) is below the 60% threshold.`] 
-            }];
-            
-            fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(skipReport, null, 2));
-            await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
-            return;
-        }
+if (matchResults.score < 60) {
+    console.error(`❌ ERROR: Match score ${matchResults.score.toFixed(2)}% is too low.`);
+    // We intentionally throw an error here so the GitHub Action "fails"
+    // This prevents the 'Upload to Supabase' step from starting
+    process.exit(1); 
+}
 
         // --- PHASE 2: DEEP AUDIT (Only runs if score >= 60%) ---
         console.log("🚀 Match confirmed! Starting deep-scan audit...");
