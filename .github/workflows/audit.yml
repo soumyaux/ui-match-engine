@@ -42,14 +42,14 @@ jobs:
       - name: 📸 Upload Visual Audit Report to Supabase
         if: always() 
         env:
-          # Mapping the payload to a simple variable
-          SESSION_ID: ${{ github.event.client_payload.sessionId }}
+          # 🚨 CHANGE: Use .inputs. instead of .client_payload.
+          SESSION_ID: ${{ github.event.inputs.sessionId }}
         run: |
-          # Use 'manual_run' if the SESSION_ID comes back empty
+          # Fallback to manual_run if the ID is missing
           FINAL_ID="${SESSION_ID:-manual_run}"
           FILENAME="${FINAL_ID}.zip"
           
-          echo "Processing scan for: $FINAL_ID"
+          echo "Uploading unique file: $FILENAME"
 
           cd playwright-report
           zip -r ../$FILENAME ./*
