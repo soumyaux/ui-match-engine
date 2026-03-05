@@ -1,130 +1,123 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 
-if (!fs.existsSync('playwright-report')){
+if (!fs.existsSync('playwright-report')) {
     fs.mkdirSync('playwright-report');
 }
 
 async function runAudit() {
-  let browser;
-  try {
-    const targetUrl = process.env.TARGET_URL;
-    const figmaTokens = JSON.parse(process.env.TOKENS);
+    let browser;
+    try {
+        const targetUrl = process.env.TARGET_URL;
+        const figmaTokens = JSON.parse(process.env.TOKENS);
 
-    console.log(`🌸 Starting Deep Visual Scan for: ${targetUrl}`);
+        console.log(`🌸 Starting Deep Visual Scan for: ${targetUrl}`);
 
-    browser = await chromium.launch();
-    const page = await browser.newPage();
-    await page.goto(targetUrl, { waitUntil: 'networkidle' });
+        browser = await chromium.launch();
+        const page = await browser.newPage();
+        
+        // Set a standard viewport to match your design expectations
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await page.goto(targetUrl, { waitUntil: 'networkidle' });
 
-    console.log("🔍 Scanning ALL elements on the page...");
-    
-    const report = await page.evaluate((design) => {
-  // 1. 🚨 THE FIX: Escape the name or handle spaces for CSS selectors
-  // We use CSS.escape() to make sure "Frame 1" doesn't break the query
-  const escapedName = CSS.escape(design.name);
-  
-  // Also create a class-friendly version by replacing spaces with dots for multi-class support
-  const classSelector = design.name.replace(/\s+/g, '.');
-      let elements = Array.from(document.querySelectorAll(
-    `[data-testid="${design.name}"], [name="${design.name}"], .${escapedName}, .${classSelector}`
-  ));
-      
-      if (elements.length === 0) {
-    elements = Array.from(document.querySelectorAll('button, a, h1, h2, p, .input')); 
-  }
+        console.log("🔍 Comparing Figma Tokens to Live Site...");
 
-      let scanResults = [];
+        const report = await page.evaluate((tokens) => {
+            let scanResults = [];
 
-      // 2. Loop and Compare EVERY Detail
-      elements.forEach((el, index) => {
-        const live = window.getComputedStyle(el);
-        let errors = [];
+            // Helper to handle multiple selector attempts per token
+            tokens.forEach((design) => {
+                let elements = [];
+                
+                // 1. Build a list of potential CSS selectors based on the layer name
+                const potentialSelectors = [
+                    `[data-testid="${design.name}"]`,
+                    `[name="${design.name}"]`,
+                    `.${CSS.escape(design.name)}`, // Handles spaces like "Frame 1"
+                    `.${design.name.replace(/\s+/g, '-')}`, // Tries "frame-1"
+                    `.${design.name.replace(/\s+/g, '_')}`  // Tries "frame_1"
+                ];
 
-        // --- BORDER RADIUS CHECK ---
-        const liveRadius = parseFloat(live.borderRadius) || 0;
-        const figmaRadius = design.cornerRadius || 0;
-        if (Math.abs(liveRadius - figmaRadius) > 1) { // 1px tolerance
-          errors.push(`Radius: Found ${liveRadius}px (Expected ${figmaRadius}px)`);
-        }
+                // 2. Try each selector one-by-one inside a try/catch to prevent crashes
+                for (const selector of potentialSelectors) {
+                    try {
+                        const found = Array.from(document.querySelectorAll(selector));
+                        if (found.length > 0) {
+                            elements = found;
+                            break; 
+                        }
+                    } catch (e) { continue; } 
+                }
 
-        // --- TYPOGRAPHY CHECK ---
-        if (design.fontSize) {
-          const liveSize = parseFloat(live.fontSize);
-          if (Math.abs(liveSize - design.fontSize) > 0.5) {
-            errors.push(`Size: Found ${liveSize}px (Expected ${design.fontSize}px)`);
-          }
-        }
+                // 3. Fallback: If no match is found, check generic UI elements
+                if (elements.length === 0) {
+                    elements = Array.from(document.querySelectorAll('button, a, h1, h2, p, .input')); 
+                }
 
-        // --- FONT WEIGHT/STYLE CHECK ---
-        if (design.fontName) {
-           const liveFont = live.fontFamily.toLowerCase();
-           if (!liveFont.includes(design.fontName.toLowerCase())) {
-             errors.push(`Font: ${live.fontFamily.split(',')[0]}`);
-           }
-        }
+                // 4. Compare style properties for every found element
+                elements.forEach((el, index) => {
+                    const live = window.getComputedStyle(el);
+                    let errors = [];
 
-        // --- COLOR CHECK (Figma RGB to Browser RGB) ---
-        if (design.fills && design.fills.length > 0) {
-          // You'll need to pass the hex/rgb string from Figma to make this simpler
-          const expectedColor = design.fills[0]; // Assuming you send a string like "rgb(x,y,z)"
-          if (live.color !== expectedColor && live.backgroundColor !== expectedColor) {
-             // Optional: Add color mismatch logic here
-          }
-        }
+                    // --- BORDER RADIUS CHECK ---
+                    const liveRadius = parseFloat(live.borderRadius) || 0;
+                    const figmaRadius = design.borderRadius || design.cornerRadius || 0;
+                    if (figmaRadius !== "Mixed" && Math.abs(liveRadius - figmaRadius) > 1) {
+                        errors.push(`Radius: Found ${liveRadius}px (Expected ${figmaRadius}px)`);
+                    }
 
-        // 3. VISUAL HIGHLIGHTING
-        if (errors.length > 0) {
-          // Highlight the element
-          el.style.outline = '3px dashed red';
-          el.style.outlineOffset = '2px';
-          el.style.backgroundColor = 'rgba(255, 0, 0, 0.05)';
+                    // --- TYPOGRAPHY CHECK ---
+                    if (design.fontSize && design.fontSize !== "Mixed") {
+                        const liveSize = parseFloat(live.fontSize);
+                        if (Math.abs(liveSize - design.fontSize) > 0.5) {
+                            errors.push(`Size: Found ${liveSize}px (Expected ${design.fontSize}px)`);
+                        }
+                    }
 
-          // Create floating error tooltip
-          const badge = document.createElement('div');
-          badge.innerHTML = `<b>${design.name || 'Element'}</b><br>${errors.join('<br>')}`;
-          badge.style.cssText = `
-            position: absolute; 
-            background: #ff0000; 
-            color: white; 
-            font-family: 'Inter', sans-serif; 
-            font-size: 11px; 
-            padding: 6px 10px; 
-            border-radius: 4px; 
-            z-index: 10000; 
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            pointer-events: none;
-            white-space: nowrap;
-          `;
-          
-          // Position the badge above the element
-          const rect = el.getBoundingClientRect();
-          badge.style.top = `${window.scrollY + rect.top - 35}px`;
-          badge.style.left = `${window.scrollX + rect.left}px`;
-          document.body.appendChild(badge);
-        }
+                    // --- VISUAL HIGHLIGHTING (Red Box & Badge) ---
+                    if (errors.length > 0) {
+                        el.style.outline = '3px dashed red';
+                        el.style.outlineOffset = '2px';
+                        el.style.backgroundColor = 'rgba(255, 0, 0, 0.05)';
 
-        scanResults.push({ 
-          element: design.name, 
-          status: errors.length === 0 ? 'PASS' : 'FAIL', 
-          details: errors 
-        });
-      });
+                        const badge = document.createElement('div');
+                        badge.innerHTML = `<b>${design.name}</b><br>${errors.join('<br>')}`;
+                        badge.style.cssText = `
+                            position: absolute; background: #ff0000; color: white;
+                            font-family: sans-serif; font-size: 10px; padding: 4px 8px;
+                            border-radius: 4px; z-index: 10000; pointer-events: none;
+                            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+                        `;
+                        const rect = el.getBoundingClientRect();
+                        badge.style.top = `${window.scrollY + rect.top - 30}px`;
+                        badge.style.left = `${window.scrollX + rect.left}px`;
+                        document.body.appendChild(badge);
+                    }
 
-      return scanResults;
-    }, figmaTokens);
+                    scanResults.push({ 
+                        element: design.name, 
+                        status: errors.length === 0 ? 'PASS' : 'FAIL', 
+                        details: errors 
+                    });
+                });
+            });
 
-    console.log("📸 Snapping the Deep Scan screenshot...");
-    await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
+            return scanResults;
+        }, figmaTokens);
 
-    fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(report, null, 2));
-    
-  } catch (error) {
-    console.error("❌ Audit failed:", error);
-    fs.writeFileSync('playwright-report/error-log.txt', `Crash Report:\n${error.stack}`);
-  } finally {
-    if (browser) await browser.close();
-  }
+        console.log("📸 Saving visual audit screenshot...");
+        await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
+
+        // Save report data for the Figma plugin to read
+        fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(report, null, 2));
+        console.log("✅ Audit completed successfully.");
+
+    } catch (error) {
+        console.error("❌ Audit failed:", error);
+        fs.writeFileSync('playwright-report/error-log.txt', `Crash Report:\n${error.stack}`);
+    } finally {
+        if (browser) await browser.close();
+    }
 }
 
 runAudit();
