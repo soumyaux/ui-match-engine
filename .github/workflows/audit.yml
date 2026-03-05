@@ -42,15 +42,12 @@ jobs:
       - name: 📸 Upload Visual Audit Report to Supabase
         if: always() 
         env:
-          # 🚨 CHANGE: Use .inputs. instead of .client_payload.
+          # 🚨 Use .inputs. because your Worker uses 'workflow_dispatch'
           SESSION_ID: ${{ github.event.inputs.sessionId }}
         run: |
-          # Fallback to manual_run if the ID is missing
           FINAL_ID="${SESSION_ID:-manual_run}"
           FILENAME="${FINAL_ID}.zip"
           
-          echo "Uploading unique file: $FILENAME"
-
           cd playwright-report
           zip -r ../$FILENAME ./*
           cd ..
