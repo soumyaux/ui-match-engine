@@ -42,17 +42,12 @@ jobs:
       - name: 📸 Upload Visual Audit Report to Supabase
         if: always() 
         run: |
-          # 1. Print the error log to the GitHub screen so we can read it!
           cd playwright-report
-          cat error-log.txt || true 
-          
-          # 2. Zip the folder
-          zip -r ../latest-scan.zip ./*
+          zip -r ../${{ github.event.client_payload.sessionId }}.zip ./*
           cd ..
 
-          # 3. Upload to Supabase
-          curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/latest-scan.zip" \
+          # Upload using the unique Session ID as the filename
+          curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/${{ github.event.client_payload.sessionId }}.zip" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/zip" \
-            -H "x-upsert: true" \
-            --data-binary @"./latest-scan.zip"
+            --data-binary @"./${{ github.event.client_payload.sessionId }}.zip"
