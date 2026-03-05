@@ -1,0 +1,25 @@
+name: 🧹 Hourly Storage Cleanup
+
+on:
+  schedule:
+    # Runs at the start of every hour (1:00, 2:00, etc.)
+    - cron: '0 * * * *'
+  workflow_dispatch: # Allows you to run it manually from the GitHub Actions tab
+
+jobs:
+  cleanup-storage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Purge all files in audit-results bucket
+        run: |
+          # 1. First, we get a list of all files in the bucket
+          FILES=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/storage/v1/object/list/audit-results" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            | jq -r '.[].name')
+
+          # 2. If the bucket isn't empty, we delete everything found
+          for FILE in $FILES; do
+            echo "Deleting $FILE..."
+            curl -X DELETE "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/$FILE" \
+              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+          done
