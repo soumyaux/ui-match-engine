@@ -2,9 +2,8 @@ name: 🧹 Hourly Storage Cleanup
 
 on:
   schedule:
-    # Runs at the start of every hour (1:00, 2:00, etc.)
-    - cron: '0 * * * *'
-  workflow_dispatch: # Allows you to run it manually from the GitHub Actions tab
+    - cron: '0 * * * *' # Runs every hour
+  workflow_dispatch: # Allows you to click "Run Workflow" manually to test
 
 jobs:
   cleanup-storage:
@@ -12,14 +11,22 @@ jobs:
     steps:
       - name: Purge all files in audit-results bucket
         run: |
-          # 1. First, we get a list of all files in the bucket
-          FILES=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/storage/v1/object/list/audit-results" \
+          # 1. Get the list of files as a JSON array
+          FILES_JSON=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/storage/v1/object/list/audit-results" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-            | jq -r '.[].name')
+            -H "Content-Type: application/json")
 
-          # 2. If the bucket isn't empty, we delete everything found
-          for FILE in $FILES; do
-            echo "Deleting $FILE..."
-            curl -X DELETE "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/$FILE" \
-              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
-          done
+          # 2. Extract just the names into a format Supabase understands for bulk delete
+          # We use 'jq' to build the ["file1.zip", "file2.zip"] array
+          FILE_NAMES=$(echo $FILES_JSON | jq -c '[.[].name]')
+
+          # 3. If the list isn't empty, send the bulk delete command
+          if [ "$FILE_NAMES" != "[]" ]; then
+            echo "Deleting files: $FILE_NAMES"
+            curl -s -X DELETE "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results" \
+              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"prefixes\": $FILE_NAMES}"
+          else
+            echo "Bucket is already empty. Nothing to do."
+          fi
