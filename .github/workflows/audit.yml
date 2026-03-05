@@ -42,12 +42,14 @@ jobs:
       - name: 📸 Upload Visual Audit Report to Supabase
         if: always() 
         run: |
+          # Use the sessionId passed from the plugin/worker as the filename
+          FILENAME="${{ github.event.client_payload.sessionId }}.zip"
+          
           cd playwright-report
-          zip -r ../${{ github.event.client_payload.sessionId }}.zip ./*
+          zip -r ../$FILENAME ./*
           cd ..
 
-          # Upload using the unique Session ID as the filename
-          curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/${{ github.event.client_payload.sessionId }}.zip" \
+          curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/$FILENAME" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/zip" \
-            --data-binary @"./${{ github.event.client_payload.sessionId }}.zip"
+            --data-binary @"./$FILENAME"
