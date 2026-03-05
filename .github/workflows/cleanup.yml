@@ -1,32 +1,28 @@
-name: 🧹 Hourly Storage Cleanup
-
-on:
-  schedule:
-    - cron: '0 * * * *' # Runs every hour
-  workflow_dispatch: # Allows you to click "Run Workflow" manually to test
-
-jobs:
-  cleanup-storage:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Purge all files in audit-results bucket
+- name: Purge all files in audit-results bucket
         run: |
-          # 1. Get the list of files as a JSON array
-          FILES_JSON=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/storage/v1/object/list/audit-results" \
+          # 1. Get the list and capture the full response for debugging
+          RESPONSE=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/storage/v1/object/list/audit-results" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json")
 
-          # 2. Extract just the names into a format Supabase understands for bulk delete
-          # We use 'jq' to build the ["file1.zip", "file2.zip"] array
-          FILE_NAMES=$(echo $FILES_JSON | jq -c '[.[].name]')
+          echo "Supabase Response: $RESPONSE"
 
-          # 3. If the list isn't empty, send the bulk delete command
-          if [ "$FILE_NAMES" != "[]" ]; then
-            echo "Deleting files: $FILE_NAMES"
+          # 2. Check if the response is a valid JSON array
+          if [[ $RESPONSE == *"error"* ]]; then
+            echo "❌ Supabase returned an error: $RESPONSE"
+            exit 1
+          fi
+
+          # 3. Extract names safely
+          FILE_NAMES=$(echo $RESPONSE | jq -c '[.[] | .name] | select(. != null)')
+
+          # 4. Delete if files exist
+          if [ "$FILE_NAMES" != "[]" ] && [ "$FILE_NAMES" != "" ]; then
+            echo "Removing: $FILE_NAMES"
             curl -s -X DELETE "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results" \
               -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
               -H "Content-Type: application/json" \
               -d "{\"prefixes\": $FILE_NAMES}"
           else
-            echo "Bucket is already empty. Nothing to do."
+            echo "Bucket is already empty. ✅"
           fi
