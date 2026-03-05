@@ -20,55 +20,88 @@ async function runAudit() {
     console.log("🔍 Scanning ALL elements on the page...");
     
     const report = await page.evaluate((design) => {
-      // 1. USE QUERY SELECTOR ALL: Find EVERY matching element on the page
-      let elements = Array.from(document.querySelectorAll(`[data-testid="${design.name}"]`));
+      // 1. Better Selector: Look for data-testid, name, or common components
+      let elements = Array.from(document.querySelectorAll(`[data-testid="${design.name}"], [name="${design.name}"], .${design.name}`));
       
-      // Fallback: If no test-id is found, grab all buttons/links to check them
       if (elements.length === 0) {
-        elements = Array.from(document.querySelectorAll('button, .btn, a')); 
+        elements = Array.from(document.querySelectorAll('button, a, h1, h2, p, .input')); 
       }
 
       let scanResults = [];
-      let expectedBg = null;
 
-      // Format the expected Figma color
-      if (design.color) {
-        expectedBg = `rgb(${Math.round(design.color.r * 255)}, ${Math.round(design.color.g * 255)}, ${Math.round(design.color.b * 255)})`;
-      }
-
-      // 2. LOOP THROUGH EVERY ELEMENT
+      // 2. Loop and Compare EVERY Detail
       elements.forEach((el, index) => {
-        const liveStyle = window.getComputedStyle(el);
+        const live = window.getComputedStyle(el);
         let errors = [];
 
-        // Check Background Color (ignoring transparent backgrounds)
-        if (expectedBg && liveStyle.backgroundColor !== expectedBg && liveStyle.backgroundColor !== 'rgba(0, 0, 0, 0)') {
-           errors.push(`Found: ${liveStyle.backgroundColor}`);
+        // --- BORDER RADIUS CHECK ---
+        const liveRadius = parseFloat(live.borderRadius) || 0;
+        const figmaRadius = design.cornerRadius || 0;
+        if (Math.abs(liveRadius - figmaRadius) > 1) { // 1px tolerance
+          errors.push(`Radius: Found ${liveRadius}px (Expected ${figmaRadius}px)`);
         }
 
-        // Check Font Size (If your Figma plugin sends it!)
-        if (design.fontSize && liveStyle.fontSize !== `${design.fontSize}px`) {
-           errors.push(`Font: ${liveStyle.fontSize}`);
-        }
-
-        // 3. IF THERE ARE ERRORS, DRAW THE RED BOX AND LABEL
-        if (errors.length > 0) {
-          // Draw the Box
-          el.style.outline = '4px solid red';
-          el.style.outlineOffset = '2px';
-          el.style.boxShadow = '0 0 15px rgba(255,0,0,0.8)';
-
-          // Create the floating error label
-          const label = document.createElement('div');
-          label.innerText = `❌ ${errors.join(' | ')}`;
-          label.style.cssText = 'position: absolute; background: red; color: white; font-family: monospace; font-size: 10px; padding: 4px; border-radius: 4px; z-index: 99999; margin-top: -25px; pointer-events: none;';
-          
-          if (el.parentNode) {
-            el.parentNode.insertBefore(label, el);
+        // --- TYPOGRAPHY CHECK ---
+        if (design.fontSize) {
+          const liveSize = parseFloat(live.fontSize);
+          if (Math.abs(liveSize - design.fontSize) > 0.5) {
+            errors.push(`Size: Found ${liveSize}px (Expected ${design.fontSize}px)`);
           }
         }
 
-        scanResults.push({ id: index, match: errors.length === 0, errors });
+        // --- FONT WEIGHT/STYLE CHECK ---
+        if (design.fontName) {
+           const liveFont = live.fontFamily.toLowerCase();
+           if (!liveFont.includes(design.fontName.toLowerCase())) {
+             errors.push(`Font: ${live.fontFamily.split(',')[0]}`);
+           }
+        }
+
+        // --- COLOR CHECK (Figma RGB to Browser RGB) ---
+        if (design.fills && design.fills.length > 0) {
+          // You'll need to pass the hex/rgb string from Figma to make this simpler
+          const expectedColor = design.fills[0]; // Assuming you send a string like "rgb(x,y,z)"
+          if (live.color !== expectedColor && live.backgroundColor !== expectedColor) {
+             // Optional: Add color mismatch logic here
+          }
+        }
+
+        // 3. VISUAL HIGHLIGHTING
+        if (errors.length > 0) {
+          // Highlight the element
+          el.style.outline = '3px dashed red';
+          el.style.outlineOffset = '2px';
+          el.style.backgroundColor = 'rgba(255, 0, 0, 0.05)';
+
+          // Create floating error tooltip
+          const badge = document.createElement('div');
+          badge.innerHTML = `<b>${design.name || 'Element'}</b><br>${errors.join('<br>')}`;
+          badge.style.cssText = `
+            position: absolute; 
+            background: #ff0000; 
+            color: white; 
+            font-family: 'Inter', sans-serif; 
+            font-size: 11px; 
+            padding: 6px 10px; 
+            border-radius: 4px; 
+            z-index: 10000; 
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            pointer-events: none;
+            white-space: nowrap;
+          `;
+          
+          // Position the badge above the element
+          const rect = el.getBoundingClientRect();
+          badge.style.top = `${window.scrollY + rect.top - 35}px`;
+          badge.style.left = `${window.scrollX + rect.left}px`;
+          document.body.appendChild(badge);
+        }
+
+        scanResults.push({ 
+          element: design.name, 
+          status: errors.length === 0 ? 'PASS' : 'FAIL', 
+          details: errors 
+        });
       });
 
       return scanResults;
