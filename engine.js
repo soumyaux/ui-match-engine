@@ -6,49 +6,76 @@ if (!fs.existsSync('playwright-report')) {
 }
 
 async function runAudit() {
-  let browser;
-  try {
-    const targetUrl = process.env.TARGET_URL;
-    
-    // 🚨 THE FIX: Ensure tokens is parsed as an Array
-    let figmaTokens = [];
+    let browser;
     try {
-        const parsed = JSON.parse(process.env.TOKENS);
-        // If it's a single layer object, wrap it in []. If it's already a list, use it.
-        figmaTokens = Array.isArray(parsed) ? parsed : [parsed];
-    } catch (e) {
-        console.error("Failed to parse TOKENS. Check your GitHub Action inputs.");
-        figmaTokens = [];
-    }
+        const targetUrl = process.env.TARGET_URL;
+        
+        let figmaTokens = [];
+        try {
+            const parsed = JSON.parse(process.env.TOKENS);
+            figmaTokens = Array.isArray(parsed) ? parsed : [parsed];
+        } catch (e) {
+            console.error("Failed to parse TOKENS. Check your GitHub Action inputs.");
+            figmaTokens = [];
+        }
 
-    console.log(`🌸 Starting Deep Visual Scan for: ${targetUrl}`);
+        console.log(`🌸 Starting Deep Visual Scan for: ${targetUrl}`);
 
         browser = await chromium.launch();
         const page = await browser.newPage();
-        
-        // Set a standard viewport to match your design expectations
         await page.setViewportSize({ width: 1440, height: 900 });
         await page.goto(targetUrl, { waitUntil: 'networkidle' });
 
-        console.log("🔍 Comparing Figma Tokens to Live Site...");
+        // --- PHASE 1: COMPATIBILITY CHECK ---
+        console.log("🔍 Running 60% Compatibility Check...");
+        const matchResults = await page.evaluate((tokens) => {
+            let matchCount = 0;
+            tokens.forEach(design => {
+                const escaped = CSS.escape(design.name);
+                const exists = document.querySelector(`[data-testid="${design.name}"], [name="${design.name}"], .${escaped}`);
+                if (exists) matchCount++;
+            });
+            return {
+                score: (matchCount / tokens.length) * 100,
+                total: tokens.length,
+                matched: matchCount
+            };
+        }, figmaTokens);
+
+        console.log(`📊 Compatibility Score: ${matchResults.score.toFixed(2)}% (${matchResults.matched}/${matchResults.total})`);
+
+        // --- THE GATEKEEPER ---
+        if (matchResults.score < 60) {
+            console.log("⚠️ Match score below 60%. Aborting deep audit to prevent false reports.");
+            
+            // Generate a 'Skip' report
+            const skipReport = [{ 
+                element: "System Check", 
+                status: "ABORTED", 
+                details: [`Compatibility Score (${matchResults.score.toFixed(2)}%) is below the 60% threshold.`] 
+            }];
+            
+            fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(skipReport, null, 2));
+            await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
+            return;
+        }
+
+        // --- PHASE 2: DEEP AUDIT (Only runs if score >= 60%) ---
+        console.log("🚀 Match confirmed! Starting deep-scan audit...");
 
         const report = await page.evaluate((tokens) => {
             let scanResults = [];
 
-            // Helper to handle multiple selector attempts per token
             tokens.forEach((design) => {
                 let elements = [];
-                
-                // 1. Build a list of potential CSS selectors based on the layer name
                 const potentialSelectors = [
                     `[data-testid="${design.name}"]`,
                     `[name="${design.name}"]`,
-                    `.${CSS.escape(design.name)}`, // Handles spaces like "Frame 1"
-                    `.${design.name.replace(/\s+/g, '-')}`, // Tries "frame-1"
-                    `.${design.name.replace(/\s+/g, '_')}`  // Tries "frame_1"
+                    `.${CSS.escape(design.name)}`,
+                    `.${design.name.replace(/\s+/g, '-')}`,
+                    `.${design.name.replace(/\s+/g, '_')}`
                 ];
 
-                // 2. Try each selector one-by-one inside a try/catch to prevent crashes
                 for (const selector of potentialSelectors) {
                     try {
                         const found = Array.from(document.querySelectorAll(selector));
@@ -59,24 +86,22 @@ async function runAudit() {
                     } catch (e) { continue; } 
                 }
 
-                // 3. Fallback: If no match is found, check generic UI elements
                 if (elements.length === 0) {
                     elements = Array.from(document.querySelectorAll('button, a, h1, h2, p, .input')); 
                 }
 
-                // 4. Compare style properties for every found element
-                elements.forEach((el, index) => {
+                elements.forEach((el) => {
                     const live = window.getComputedStyle(el);
                     let errors = [];
 
-                    // --- BORDER RADIUS CHECK ---
+                    // Border Radius Check
                     const liveRadius = parseFloat(live.borderRadius) || 0;
                     const figmaRadius = design.borderRadius || design.cornerRadius || 0;
                     if (figmaRadius !== "Mixed" && Math.abs(liveRadius - figmaRadius) > 1) {
                         errors.push(`Radius: Found ${liveRadius}px (Expected ${figmaRadius}px)`);
                     }
 
-                    // --- TYPOGRAPHY CHECK ---
+                    // Typography Check
                     if (design.fontSize && design.fontSize !== "Mixed") {
                         const liveSize = parseFloat(live.fontSize);
                         if (Math.abs(liveSize - design.fontSize) > 0.5) {
@@ -84,7 +109,7 @@ async function runAudit() {
                         }
                     }
 
-                    // --- VISUAL HIGHLIGHTING (Red Box & Badge) ---
+                    // Visual Highlighting
                     if (errors.length > 0) {
                         el.style.outline = '3px dashed red';
                         el.style.outlineOffset = '2px';
@@ -115,10 +140,7 @@ async function runAudit() {
             return scanResults;
         }, figmaTokens);
 
-        console.log("📸 Saving visual audit screenshot...");
         await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
-
-        // Save report data for the Figma plugin to read
         fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(report, null, 2));
         console.log("✅ Audit completed successfully.");
 
