@@ -1,28 +1,35 @@
-- name: Purge all files in audit-results bucket
+name: 🧹 Hourly Storage Cleanup
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch: 
+
+jobs:
+  cleanup-storage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Purge all files in audit-results bucket
         run: |
-          # 1. Get the list and capture the full response for debugging
+          # 1. Get the list of files
+          # Ensure SUPABASE_URL does NOT have a trailing slash
           RESPONSE=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/storage/v1/object/list/audit-results" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json")
 
-          echo "Supabase Response: $RESPONSE"
+          echo "Response from Supabase: $RESPONSE"
 
-          # 2. Check if the response is a valid JSON array
-          if [[ $RESPONSE == *"error"* ]]; then
-            echo "❌ Supabase returned an error: $RESPONSE"
-            exit 1
-          fi
-
-          # 3. Extract names safely
+          # 2. Extract names safely using jq
+          # The 'select' ensures we don't crash on empty lists
           FILE_NAMES=$(echo $RESPONSE | jq -c '[.[] | .name] | select(. != null)')
 
-          # 4. Delete if files exist
+          # 3. If files exist, delete them
           if [ "$FILE_NAMES" != "[]" ] && [ "$FILE_NAMES" != "" ]; then
-            echo "Removing: $FILE_NAMES"
+            echo "Deleting: $FILE_NAMES"
             curl -s -X DELETE "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results" \
               -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
               -H "Content-Type: application/json" \
               -d "{\"prefixes\": $FILE_NAMES}"
           else
-            echo "Bucket is already empty. ✅"
+            echo "Nothing to delete. Bucket is clean! ✅"
           fi
