@@ -55,7 +55,7 @@ jobs:
           zip -r ../$FILENAME ./*
           cd ..
 
-          curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/$FILENAME" \
+          curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit/$FILENAME" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/zip" \
             -H "x-upsert: true" \
