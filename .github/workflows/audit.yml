@@ -14,6 +14,10 @@ on:
         description: 'Unique ID'
         required: false
         default: 'manual-scan'
+      tokens:
+        description: 'Design tokens (compact JSON)'
+        required: false
+        default: '[]'
 
 jobs:
   audit:
@@ -25,10 +29,11 @@ jobs:
         with:
           node-version: '20'
           
-      - name:  Check Figma Inputs
+      - name: 👀 Check Figma Inputs
         run: |
           echo "Target URL: ${{ github.event.inputs.url }}"
           echo "Scan ID: ${{ github.event.inputs.scan_id }}"
+          echo "Tokens length: $(echo '${{ github.event.inputs.tokens }}' | wc -c) bytes"
           
       - name: Install & Run Engine
         run: |
@@ -37,6 +42,7 @@ jobs:
           node engine.js
         env:
           TARGET_URL: ${{ github.event.inputs.url }}
+          TOKENS: ${{ github.event.inputs.tokens }}
 
       - name: 📸 Upload Visual Audit Report to Supabase
         if: always()
