@@ -3,14 +3,13 @@ name: UI Match Audit
 on:
   workflow_dispatch:
     inputs:
+      scan_id:
+        description: 'Supabase Scan ID'
+        required: true
       url:
         description: 'Target URL'
         required: true
-      designTokens:
-        description: 'Figma Tokens'
-        required: false
-        default: '{}'
-      sessionId:
+      session_id:
         description: 'Unique ID'
         required: false
         default: 'manual-scan'
@@ -25,28 +24,52 @@ jobs:
         with:
           node-version: '20'
           
+      - name: 🔍 Fetch Design Tokens from Supabase
+        id: fetch_tokens
+        run: |
+          SCAN_ID="${{ github.event.inputs.scan_id }}"
+          SUPABASE_URL="${{ secrets.SUPABASE_URL }}"
+          SUPABASE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+          
+          echo "Fetching scan record for ID: $SCAN_ID"
+          
+          RESPONSE=$(curl -s -X GET "$SUPABASE_URL/rest/v1/scan_history?id=eq.$SCAN_ID&select=design_tokens" \
+            -H "apikey: $SUPABASE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_KEY")
+          
+          echo "Supabase response: $RESPONSE"
+          
+          # Extract design_tokens from the response array
+          TOKENS=$(echo "$RESPONSE" | jq -r '.[0].design_tokens')
+          
+          if [ "$TOKENS" = "null" ] || [ -z "$TOKENS" ]; then
+            echo "Error: Failed to fetch design tokens for scan_id $SCAN_ID"
+            exit 1
+          fi
+          
+          echo "Successfully fetched design tokens"
+          echo "TOKENS=$TOKENS" >> $GITHUB_OUTPUT
+          
       - name: 👀 Check Figma Inputs
         run: |
           echo "Target URL: ${{ github.event.inputs.url }}"
-          echo "Design Tokens: ${{ github.event.inputs.designTokens }}"
+          echo "Scan ID: ${{ github.event.inputs.scan_id }}"
+          echo "Design Tokens fetched: $(echo '${{ steps.fetch_tokens.outputs.TOKENS }}' | jq 'length') tokens"
           
       - name: Install & Run Engine
         run: |
           npm install playwright
           npx playwright install --with-deps chromium
           node engine.js
-        # 🚨 MOVED THIS HERE: Now engine.js can read the tokens! 🚨
         env:
           TARGET_URL: ${{ github.event.inputs.url }}
-          TOKENS: ${{ github.event.inputs.designTokens }}
+          TOKENS: ${{ steps.fetch_tokens.outputs.TOKENS }}
 
-      # 🚨 NEW STEP: Zip the Playwright report and push to Supabase
-      # 🚨 UPATED: Using the correct SUPABASE_SERVICE_ROLE_KEY
       - name: 📸 Upload Visual Audit Report to Supabase
         if: always()
         env:
-          # 🚨 Use .inputs. because your Worker uses 'workflow_dispatch'
-          SESSION_ID: ${{ github.event.inputs.sessionId }}
+          SESSION_ID: ${{ github.event.inputs.session_id }}
+          SCAN_ID: ${{ github.event.inputs.scan_id }}
         run: |
           FINAL_ID="${SESSION_ID:-manual_run}"
           FILENAME="${FINAL_ID}.zip"
@@ -55,9 +78,38 @@ jobs:
           zip -r ../$FILENAME ./*
           cd ..
           
-          # Updated to audit-results
           curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/$FILENAME" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/zip" \
             -H "x-upsert: true" \
             --data-binary @"./$FILENAME"
+          
+          echo "Report uploaded successfully"
+          
+      - name: ✅ Update Scan Status to Completed
+        if: success()
+        run: |
+          SCAN_ID="${{ github.event.inputs.scan_id }}"
+          
+          curl -X PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.$SCAN_ID" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d '{"status": "completed"}'
+          
+          echo "Scan status updated to completed"
+          
+      - name: ❌ Update Scan Status to Failed
+        if: failure()
+        run: |
+          SCAN_ID="${{ github.event.inputs.scan_id }}"
+          
+          curl -X PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.$SCAN_ID" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d '{"status": "failed"}'
+          
+          echo "Scan status updated to failed"
