@@ -45,20 +45,31 @@ async function runAudit() {
     }, figmaTokens);
 
     if (matchResults.total === 0) {
-      console.error('No tokens provided; skipping audit.');
+      const msg = 'No tokens provided; skipping audit.';
+      console.error(msg);
+      fs.writeFileSync('playwright-report/error-log.txt', msg);
       process.exit(1);
     }
 
     if (matchResults.score < 60) {
-      console.error(`❌ ERROR: Match score ${matchResults.score.toFixed(2)}% is too low.`);
+      const msg = `❌ Low match score: ${matchResults.score.toFixed(2)}% (matched ${matchResults.matched}/${matchResults.total}). Audit aborted.`;
+      console.error(msg);
+      fs.writeFileSync('playwright-report/error-log.txt', msg);
+      await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
       process.exit(1);
     }
 
     // --- PHASE 2: Deep audit with highlighting ---
     console.log('🚀 Match confirmed! Starting deep-scan audit...');
 
-    const report = await page.evaluate((tokens) => {
-      const results = [];
+    const report = await page.evaluate((tokens, matchResults) => {
+      const results = [
+        {
+          element: '__summary__',
+          status: matchResults.score >= 60 ? 'PASS' : 'FAIL',
+          details: [`Score: ${matchResults.score.toFixed(2)}%`, `Matched: ${matchResults.matched}/${matchResults.total}`],
+        },
+      ];
       tokens.forEach((design) => {
         const name = design.name || 'unknown';
         let elements = [];
@@ -142,7 +153,7 @@ async function runAudit() {
       });
 
       return results;
-    }, figmaTokens);
+    }, figmaTokens, matchResults);
 
     await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
     fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(report, null, 2));
