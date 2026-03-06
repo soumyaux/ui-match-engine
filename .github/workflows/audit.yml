@@ -45,7 +45,7 @@ jobs:
           TOKENS: ${{ github.event.inputs.tokens }}
 
       - name: 📸 Upload Visual Audit Report to Supabase
-        if: always()
+        if: success()
         env:
           SESSION_ID: ${{ github.event.inputs.session_id }}
           SCAN_ID: ${{ github.event.inputs.scan_id }}
