@@ -3,6 +3,10 @@ name: UI Match Audit
 on:
   workflow_dispatch:
     inputs:
+      scan_id:
+        description: 'Supabase Scan ID'
+        required: false
+        default: ''
       url:
         description: 'Target URL'
         required: true
@@ -16,16 +20,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+      
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-
-      - name: 👀 Check Inputs
+          
+      - name:  Check Figma Inputs
         run: |
           echo "Target URL: ${{ github.event.inputs.url }}"
-          echo "Session ID: ${{ github.event.inputs.session_id }}"
-
+          echo "Scan ID: ${{ github.event.inputs.scan_id }}"
+          
       - name: Install & Run Engine
         run: |
           npm install playwright
@@ -38,26 +42,29 @@ jobs:
         if: always()
         env:
           SESSION_ID: ${{ github.event.inputs.session_id }}
+          SCAN_ID: ${{ github.event.inputs.scan_id }}
         run: |
           FINAL_ID="${SESSION_ID:-manual_run}"
           FILENAME="${FINAL_ID}.zip"
-
+          
           cd playwright-report
           zip -r ../$FILENAME ./*
           cd ..
-
+          
           curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/$FILENAME" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/zip" \
             -H "x-upsert: true" \
             --data-binary @"./$FILENAME"
-
+          
+          echo "Report uploaded successfully"
+          
       - name: ✅ Update Scan Status to Completed
         if: success()
         run: |
-          echo "Skipped (no DB status update needed)"
-
+          echo "No DB status update needed"
+          
       - name: ❌ Update Scan Status to Failed
         if: failure()
         run: |
-          echo "Skipped (no DB status update needed)"
+          echo "No DB status update needed"
