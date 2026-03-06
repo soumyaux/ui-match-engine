@@ -28,6 +28,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      - name: 🚦 Mark Scan Running
+        if: ${{ github.event.inputs.scan_id != '' }}
+        run: |
+          SCAN_ID="${{ github.event.inputs.scan_id }}"
+          curl -X PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.$SCAN_ID" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d '{"status": "running"}'
           
       - name: 👀 Check Figma Inputs
         run: |
@@ -66,11 +77,23 @@ jobs:
           echo "Report uploaded successfully"
           
       - name: ✅ Update Scan Status to Completed
-        if: success()
+        if: ${{ success() && github.event.inputs.scan_id != '' }}
         run: |
-          echo "No DB status update needed"
+          SCAN_ID="${{ github.event.inputs.scan_id }}"
+          curl -X PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.$SCAN_ID" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d '{"status": "completed"}'
           
       - name: ❌ Update Scan Status to Failed
-        if: failure()
+        if: ${{ failure() && github.event.inputs.scan_id != '' }}
         run: |
-          echo "No DB status update needed"
+          SCAN_ID="${{ github.event.inputs.scan_id }}"
+          curl -X PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.$SCAN_ID" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d '{"status": "failed"}'
