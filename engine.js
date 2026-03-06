@@ -9,6 +9,7 @@ async function runAudit() {
   let browser;
   try {
     const targetUrl = process.env.TARGET_URL;
+    const MATCH_THRESHOLD = 75;
     let figmaTokens = [];
 
     try {
@@ -51,7 +52,7 @@ async function runAudit() {
       process.exit(1);
     }
 
-    if (matchResults.score < 60) {
+    if (matchResults.score < MATCH_THRESHOLD) {
       const msg = `❌ Low match score: ${matchResults.score.toFixed(2)}% (matched ${matchResults.matched}/${matchResults.total}). Audit aborted.`;
       console.error(msg);
       fs.writeFileSync('playwright-report/error-log.txt', msg);
@@ -66,7 +67,7 @@ async function runAudit() {
       const results = [
         {
           element: '__summary__',
-          status: matchResults.score >= 60 ? 'PASS' : 'FAIL',
+          status: matchResults.score >= MATCH_THRESHOLD ? 'PASS' : 'FAIL',
           details: [`Score: ${matchResults.score.toFixed(2)}%`, `Matched: ${matchResults.matched}/${matchResults.total}`],
         },
       ];
