@@ -23,8 +23,9 @@ async function runAudit() {
     console.log(`🌸 Starting Deep Visual Scan for: ${targetUrl}`);
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto(targetUrl, { waitUntil: 'networkidle' });
+    await page.goto(targetUrl, { waitUntil: 'load', timeout: 60000 });
 
     // --- PHASE 1: 60% compatibility gate ---
     console.log('🔍 Running 60% Compatibility Check...');
