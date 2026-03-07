@@ -63,11 +63,11 @@ async function runAudit() {
     // --- PHASE 2: Deep audit with highlighting ---
     console.log('🚀 Match confirmed! Starting deep-scan audit...');
 
-    const report = await page.evaluate((tokens, matchResults) => {
+    const report = await page.evaluate(({ tokens, matchResults, threshold }) => {
       const results = [
         {
           element: '__summary__',
-          status: matchResults.score >= MATCH_THRESHOLD ? 'PASS' : 'FAIL',
+          status: matchResults.score >= threshold ? 'PASS' : 'FAIL',
           details: [`Score: ${matchResults.score.toFixed(2)}%`, `Matched: ${matchResults.matched}/${matchResults.total}`],
         },
       ];
@@ -151,10 +151,13 @@ async function runAudit() {
             details: errors,
           });
         });
+        if (design.borderRadius === 'Mixed' || design.cornerRadius === 'Mixed') {
+          summary.details.push(`Mixed radius for ${name}`);
+        }
       });
 
       return results;
-    }, figmaTokens, matchResults);
+    }, { tokens: figmaTokens, matchResults, threshold: MATCH_THRESHOLD });
 
     await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
     fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(report, null, 2));
