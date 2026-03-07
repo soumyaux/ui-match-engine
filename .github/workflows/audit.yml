@@ -80,12 +80,15 @@ jobs:
         if: ${{ success() && github.event.inputs.scan_id != '' }}
         run: |
           SCAN_ID="${{ github.event.inputs.scan_id }}"
+          SESSION_ID="${{ github.event.inputs.session_id }}"
+          FINAL_ID="${SESSION_ID:-manual_run}"
+          PNG_URL="${{ secrets.SUPABASE_URL }}/storage/v1/object/public/audit-results/${FINAL_ID}.zip"
           curl -X PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.$SCAN_ID" \
             -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
-            -d '{"status": "completed"}'
+            -d "{\"status\": \"completed\", \"audit_png_url\": \"$PNG_URL\"}"
           
       - name: ❌ Update Scan Status to Failed
         if: ${{ failure() && github.event.inputs.scan_id != '' }}
