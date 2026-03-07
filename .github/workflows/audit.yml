@@ -42,7 +42,7 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
-            -d '{"status": "running"}'
+            -d '{"audit_status": "running"}'
           
       - name: 👀 Check Figma Inputs
         run: |
@@ -106,7 +106,7 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
-            -d "{\"status\": \"completed\", \"audit_png_url\": \"$PNG_URL\"}"
+            -d "{\"audit_status\": \"completed\", \"audit_png_url\": \"$PNG_URL\"}"
           
       - name: ❌ Update Scan Status to Failed
         if: ${{ failure() && github.event.inputs.scan_id != '' }}
@@ -124,4 +124,4 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
-            -d "{\"status\": \"failed\", \"error_message\": $ERROR_JSON}"
+            -d "{\"audit_status\": \"failed\", \"error_message\": $ERROR_JSON}"
