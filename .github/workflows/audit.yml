@@ -112,9 +112,16 @@ jobs:
         if: ${{ failure() && github.event.inputs.scan_id != '' }}
         run: |
           SCAN_ID="${{ github.event.inputs.scan_id }}"
+          # Read error message from engine report if available
+          ERROR_MSG="Audit failed unexpectedly."
+          if [ -f "playwright-report/error-log.txt" ]; then
+            ERROR_MSG=$(cat playwright-report/error-log.txt | head -c 500)
+          fi
+          # Escape for JSON
+          ERROR_JSON=$(echo "$ERROR_MSG" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip()))' 2>/dev/null || echo '"Audit failed"')
           curl -X PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.$SCAN_ID" \
             -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
-            -d '{"status": "failed"}'
+            -d "{\"status\": \"failed\", \"error_message\": $ERROR_JSON}"
