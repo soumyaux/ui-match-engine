@@ -149,7 +149,7 @@ async function runAudit() {
       
       // If both heuristics indicate very low match, abort
       if (sizeRatio < 0.1 && byteSimilarity < 20) {
-        const msg = `❌ Visual Pre-Check Failed: The Figma design and live website don't appear to match.\nPlease verify you selected the correct Figma frame and entered the right URL.\n(Size ratio: ${(sizeRatio * 100).toFixed(1)}%, Byte similarity: ${byteSimilarity.toFixed(1)}%)`;
+        const msg = `❌ Visual pre-check failed: The Figma design and live website don't appear to match.\nPlease verify you selected the correct Figma frame and entered the right URL.\n(Size ratio: ${(sizeRatio * 100).toFixed(1)}%, Byte similarity: ${byteSimilarity.toFixed(1)}%)`;
         console.error(msg);
         fs.writeFileSync('playwright-report/error-log.txt', msg);
         // Still save the screenshots for debugging
@@ -231,7 +231,11 @@ async function runAudit() {
         },
       ];
 
+      let processedCount = 0;
+      const totalTokens = tokens.length;
+
       tokens.forEach((design) => {
+        processedCount++;
         const name = design.name || 'unknown';
         let elements = [];
         const selectors = [
@@ -255,11 +259,14 @@ async function runAudit() {
           }
         }
 
-        // Fallback: try common elements for TEXT type tokens
-        if (elements.length === 0 && design.type === 'TEXT') {
-          elements = Array.from(document.querySelectorAll('button, a, h1, h2, h3, h4, h5, h6, p, span, label, .input, li'));
-        } else if (elements.length === 0) {
-          elements = Array.from(document.querySelectorAll('button, a, div, section, header, footer, nav, main, .input'));
+        // If no element found by any selector, mark as NOT_FOUND and skip
+        if (elements.length === 0) {
+          results.push({
+            element: name,
+            status: 'NOT_FOUND',
+            details: ['Element not found on page by name/class/id'],
+          });
+          return; // skip to next token
         }
 
         elements.forEach((el) => {
@@ -455,7 +462,8 @@ async function runAudit() {
 
     const failCount = report.filter(r => r.status === 'FAIL' && r.element !== '__summary__').length;
     const passCount = report.filter(r => r.status === 'PASS' && r.element !== '__summary__').length;
-    console.log(`✅ Audit completed. ${passCount} passed, ${failCount} issues found across ${report.length - 1} elements.`);
+    const notFoundCount = report.filter(r => r.status === 'NOT_FOUND').length;
+    console.log(`✅ Audit completed. ${passCount} passed, ${failCount} issues, ${notFoundCount} not found — across ${figmaTokens.length} tokens.`);
   } catch (error) {
     console.error('❌ Audit failed:', error);
     fs.writeFileSync('playwright-report/error-log.txt', `Crash Report:\n${error.stack}`);
