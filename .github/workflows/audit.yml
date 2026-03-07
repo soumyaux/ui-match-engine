@@ -14,10 +14,14 @@ on:
         description: 'Unique ID'
         required: false
         default: 'manual-scan'
-      tokens:
-        description: 'Design tokens (compact JSON)'
+      tokens_url:
+        description: 'URL to design tokens JSON in Supabase Storage'
         required: false
-        default: '[]'
+        default: ''
+      figma_image_url:
+        description: 'URL to Figma frame PNG in Supabase Storage'
+        required: false
+        default: ''
 
 jobs:
   audit:
@@ -46,6 +50,19 @@ jobs:
           echo "Scan ID: ${{ github.event.inputs.scan_id }}"
           echo "Tokens length: $(echo '${{ github.event.inputs.tokens }}' | wc -c) bytes"
           
+      - name: 📥 Download Design Tokens
+        if: ${{ github.event.inputs.tokens_url != '' }}
+        run: |
+          curl -sL "${{ github.event.inputs.tokens_url }}" -o tokens.json
+          echo "Tokens file size: $(wc -c < tokens.json) bytes"
+          echo "Token count: $(cat tokens.json | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 'unknown')"
+
+      - name: 🖼️ Download Figma Frame Image
+        if: ${{ github.event.inputs.figma_image_url != '' }}
+        run: |
+          curl -sL "${{ github.event.inputs.figma_image_url }}" -o figma-frame.png
+          echo "Figma image size: $(wc -c < figma-frame.png) bytes"
+
       - name: Install & Run Engine
         run: |
           npm install playwright
@@ -53,7 +70,8 @@ jobs:
           node engine.js
         env:
           TARGET_URL: ${{ github.event.inputs.url }}
-          TOKENS: ${{ github.event.inputs.tokens }}
+          TOKENS_FILE: tokens.json
+          FIGMA_IMAGE: figma-frame.png
 
       - name: 📸 Upload Visual Audit Report to Supabase
         if: success()
