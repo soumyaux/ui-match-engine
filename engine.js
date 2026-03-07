@@ -425,7 +425,7 @@ async function runAudit() {
 
           // ── HIGHLIGHT MISMATCHES ON PAGE ──
           if (errors.length > 0) {
-            el.style.outline = '3px dashed red';
+            el.style.outline = '2px dashed red';
             el.style.outlineOffset = '2px';
             el.style.backgroundColor = 'rgba(255, 0, 0, 0.05)';
 
