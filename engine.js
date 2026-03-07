@@ -20,11 +20,26 @@ async function runAudit() {
       figmaTokens = [];
     }
 
+    // --- PHASE 0: Navigation & Reachability Check ---
     console.log(`🌸 Starting Deep Visual Scan for: ${targetUrl}`);
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto(targetUrl, { waitUntil: 'networkidle' });
+    
+    try {
+      console.log(`🌍 Navigating to ${targetUrl}...`);
+      const response = await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
+      if (!response || !response.ok()) {
+        const status = response ? response.status() : 'Unknown';
+        console.error(`❌ HTTP Error ${status}: Target website returned an error or is unreachable.`);
+        fs.writeFileSync('playwright-report/error-log.txt', `HTTP Error ${status}: Target website returned an error or is unreachable.`);
+        process.exit(1);
+      }
+    } catch (navError) {
+      console.error(`❌ Failed to reach ${targetUrl}. The URL might be invalid, or the site is down. Details: ${navError.message}`);
+      fs.writeFileSync('playwright-report/error-log.txt', `Navigation failed: ${navError.message}`);
+      process.exit(1);
+    }
 
     // --- PHASE 1: 60% compatibility gate ---
     console.log('🔍 Running 60% Compatibility Check...');
