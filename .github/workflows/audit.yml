@@ -4,34 +4,34 @@ on:
   workflow_dispatch:
     inputs:
       scan_id:
-        description: 'Supabase Scan ID'
+        description: "Supabase Scan ID"
         required: false
-        default: ''
+        default: ""
       url:
-        description: 'Target URL'
+        description: "Target URL"
         required: true
       session_id:
-        description: 'Unique ID'
+        description: "Unique ID"
         required: false
-        default: 'manual-scan'
+        default: "manual-scan"
       tokens_url:
-        description: 'URL to design tokens JSON in Supabase Storage'
+        description: "URL to design tokens JSON in Supabase Storage"
         required: false
-        default: ''
+        default: ""
       figma_image_url:
-        description: 'URL to Figma frame PNG in Supabase Storage'
+        description: "URL to Figma frame PNG in Supabase Storage"
         required: false
-        default: ''
+        default: ""
 
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: 🚦 Mark Scan Running
         if: ${{ github.event.inputs.scan_id != '' }}
@@ -43,13 +43,13 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
             -d '{"audit_status": "running"}'
-          
+
       - name: 👀 Check Figma Inputs
         run: |
           echo "Target URL: ${{ github.event.inputs.url }}"
           echo "Scan ID: ${{ github.event.inputs.scan_id }}"
           echo "Tokens length: $(echo '${{ github.event.inputs.tokens }}' | wc -c) bytes"
-          
+
       - name: 📥 Download Design Tokens
         if: ${{ github.event.inputs.tokens_url != '' }}
         run: |
@@ -81,19 +81,19 @@ jobs:
         run: |
           FINAL_ID="${SESSION_ID:-manual_run}"
           FILENAME="${FINAL_ID}.zip"
-          
+
           cd playwright-report
           zip -r ../$FILENAME ./*
           cd ..
-          
+
           curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/$FILENAME" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/zip" \
             -H "x-upsert: true" \
             --data-binary @"./$FILENAME"
-          
+
           echo "Report uploaded successfully"
-          
+
       - name: ✅ Update Scan Status to Completed
         if: ${{ success() && github.event.inputs.scan_id != '' }}
         run: |
@@ -107,7 +107,7 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
             -d "{\"audit_status\": \"completed\", \"audit_png_url\": \"$PNG_URL\"}"
-          
+
       - name: ❌ Update Scan Status to Failed
         if: ${{ failure() && github.event.inputs.scan_id != '' }}
         run: |
