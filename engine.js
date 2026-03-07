@@ -9,7 +9,7 @@ async function runAudit() {
   let browser;
   try {
     const targetUrl = process.env.TARGET_URL;
-    // const MATCH_THRESHOLD = 50;
+    const threshold = Number(process.env.MATCH_THRESHOLD || 0);
     let figmaTokens = [];
 
     try {
@@ -24,7 +24,7 @@ async function runAudit() {
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto(targetUrl, { waitUntil: 'load', timeout: 60000 });
+    await page.goto(targetUrl, { waitUntil: 'networkidle' });
 
     // --- PHASE 1: 60% compatibility gate ---
     console.log('🔍 Running 60% Compatibility Check...');
@@ -52,13 +52,13 @@ async function runAudit() {
       process.exit(1);
     }
 
-    // if (matchResults.score < MATCH_THRESHOLD) {
-    //   const msg = `❌ Low match score: ${matchResults.score.toFixed(2)}% (matched ${matchResults.matched}/${matchResults.total}). Audit aborted.`;
-    //   console.error(msg);
-    //   fs.writeFileSync('playwright-report/error-log.txt', msg);
-    //   await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
-    //   process.exit(1);
-    // }
+    if (matchResults.score < threshold) {
+      const msg = `❌ Low match score: ${matchResults.score.toFixed(2)}% (matched ${matchResults.matched}/${matchResults.total}). Audit aborted.`;
+      console.error(msg);
+      fs.writeFileSync('playwright-report/error-log.txt', msg);
+      await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
+      process.exit(1);
+    }
 
     // --- PHASE 2: Deep audit with highlighting ---
     console.log('🚀 Match confirmed! Starting deep-scan audit...');
@@ -151,13 +151,14 @@ async function runAudit() {
             details: errors,
           });
         });
+
         if (design.borderRadius === 'Mixed' || design.cornerRadius === 'Mixed') {
           summary.details.push(`Mixed radius for ${name}`);
         }
       });
 
       return results;
-    }, { tokens: figmaTokens, matchResults, threshold: MATCH_THRESHOLD });
+    }, { tokens: figmaTokens, matchResults, threshold });
 
     await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
     fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(report, null, 2));
