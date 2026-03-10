@@ -151,38 +151,55 @@ async function runAudit() {
 
       const results = [];
       let tokenFailures = 0;
-      // Track checked positions to avoid duplicate checks at the same spot
+      // === DEDUPLICATION: Track DOM elements already checked ===
+      // Multiple Figma tokens can hit the same DOM element — only report each once
+      const seenElements = new Map(); // DOM element → index in results
       const checkedPositions = new Set();
 
       tokens.forEach((design) => {
         const name = design.name || 'unknown';
-        // Use position-based matching: find the live DOM element at the Figma token's center coordinates
+        // Skip tiny spacer/divider tokens that aren't meaningful UI components
+        if ((design.w || 0) < 20 && (design.h || 0) < 20) return;
+        
         const cx = (design.x || 0) + (design.w || 0) / 2;
         const cy = (design.y || 0) + (design.h || 0) / 2;
         
-        // Skip if coordinates are invalid or already checked nearby
         if (cx <= 0 && cy <= 0) return;
-        const posKey = Math.round(cx / 5) + ',' + Math.round(cy / 5);
+        // Wider dedup radius (10px) to avoid checking overlapping tokens
+        const posKey = Math.round(cx / 10) + ',' + Math.round(cy / 10);
         if (checkedPositions.has(posKey)) return;
         checkedPositions.add(posKey);
         
         const el = document.elementFromPoint(cx, cy);
         if (!el || el === document.body || el === document.documentElement) return;
+        
+        // === SKIP IRRELEVANT ELEMENTS ===
+        // Skip SVG graphs, charts, canvas, iframes, video — these are dynamic content not relevant to UI audit
+        const tag = el.tagName.toUpperCase();
+        if (tag === 'CANVAS' || tag === 'IFRAME' || tag === 'VIDEO' || tag === 'AUDIO') return;
+        if (tag === 'SVG' || el.closest?.('svg')) return; // Skip SVG icons and graphs
+        if (el.closest?.('canvas') || el.closest?.('iframe')) return;
+        // Skip elements inside chart containers (common libraries)
+        if (el.closest?.('[class*="chart"]') || el.closest?.('[class*="graph"]') || el.closest?.('[class*="recharts"]') || el.closest?.('[class*="highcharts"]') || el.closest?.('[class*="apexcharts"]')) return;
 
         const live = window.getComputedStyle(el);
         const rect = el.getBoundingClientRect();
+        // Skip off-screen or invisible elements
+        if (rect.width < 5 || rect.height < 5) return;
         const elName = getElementName(el);
         const errors = [];
 
-        // ── FONT SIZE ──
+        // ── FONT SIZE ── (structured diff format)
         if (design.fs && design.fs !== 'Mixed') {
           const liveSize = parseFloat(live.fontSize);
-          if (Math.abs(liveSize - design.fs) > 0.5) errors.push(`Font Size: ${liveSize}px (Expected ${design.fs}px)`);
+          const diff = Math.round(liveSize - design.fs);
+          if (Math.abs(diff) > 0.5) errors.push(`Font Size: Figma ${design.fs}px → Live ${liveSize}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
         }
         // ── FONT FAMILY ──
         if (design.ff && design.ff !== 'Mixed' && live.fontFamily) {
+          const liveFF = live.fontFamily.split(',')[0].trim().replace(/["']/g, '');
           if (!live.fontFamily.toLowerCase().includes(design.ff.toLowerCase())) {
-            errors.push(`Font Family: ${live.fontFamily.split(',')[0].trim()} (Expected ${design.ff})`);
+            errors.push(`Font Family: Figma "${design.ff}" → Live "${liveFF}"`);
           }
         }
         // ── FONT WEIGHT ──
@@ -190,111 +207,131 @@ async function runAudit() {
           const weightMap = { 'Thin': '100', 'ExtraLight': '200', 'Light': '300', 'Regular': '400', 'Medium': '500', 'SemiBold': '600', 'Bold': '700', 'ExtraBold': '800', 'Black': '900' };
           const expectedWeight = weightMap[design.fw] || design.fw;
           if (live.fontWeight !== expectedWeight && live.fontWeight !== String(expectedWeight)) {
-            errors.push(`Font Weight: ${live.fontWeight} (Expected ${expectedWeight})`);
+            errors.push(`Font Weight: Figma ${expectedWeight} → Live ${live.fontWeight}`);
           }
         }
         // ── TEXT COLOR ──
         if (design.color) {
           if (!colorsMatchBrowser(design.color, live.color)) {
-            errors.push(`Text Color: ${parseColorBrowser(live.color)} (Expected ${design.color.toLowerCase()})`);
+            errors.push(`Text Color: Figma ${design.color.toLowerCase()} → Live ${parseColorBrowser(live.color)}`);
           }
         }
         // ── BACKGROUND COLOR ──
         if (design.bg && design.bg.length > 0) {
           const liveBg = parseColorBrowser(live.backgroundColor);
           if (liveBg && liveBg !== 'transparent' && liveBg !== 'rgba(0, 0, 0, 0)' && !colorsMatchBrowser(design.bg[0], live.backgroundColor)) {
-            errors.push(`Background: ${liveBg} (Expected ${design.bg[0].toLowerCase()})`);
+            errors.push(`Background: Figma ${design.bg[0].toLowerCase()} → Live ${liveBg}`);
           }
         }
         // ── BORDER RADIUS ──
         if (design.br !== undefined && design.br !== 'Mixed' && design.br > 0) {
           const liveRadius = parseFloat(live.borderRadius) || 0;
-          if (Math.abs(liveRadius - design.br) > 1) errors.push(`Border Radius: ${liveRadius}px (Expected ${design.br}px)`);
+          const diff = Math.round(liveRadius - design.br);
+          if (Math.abs(diff) > 1) errors.push(`Border Radius: Figma ${design.br}px → Live ${liveRadius}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
         }
         // ── LETTER SPACING ──
         if (design.ls !== undefined && design.ls !== 'Mixed') {
           const liveLs = live.letterSpacing === 'normal' ? 0 : parseFloat(live.letterSpacing) || 0;
           const expectedLs = typeof design.ls === 'number' ? design.ls : 0;
-          if (Math.abs(liveLs - expectedLs) > 0.5) errors.push(`Letter Spacing: ${liveLs}px (Expected ${expectedLs}px)`);
+          if (Math.abs(liveLs - expectedLs) > 0.5) errors.push(`Letter Spacing: Figma ${expectedLs}px → Live ${liveLs}px`);
         }
         // ── LINE HEIGHT ──
         if (design.lh !== undefined && design.lh !== 'Mixed') {
           const liveLh = live.lineHeight === 'normal' ? 0 : parseFloat(live.lineHeight) || 0;
           const expectedLh = typeof design.lh === 'number' ? design.lh : 0;
-          if (expectedLh > 0 && liveLh > 0 && Math.abs(liveLh - expectedLh) > 1) errors.push(`Line Height: ${liveLh}px (Expected ${expectedLh}px)`);
+          if (expectedLh > 0 && liveLh > 0 && Math.abs(liveLh - expectedLh) > 1) {
+            const diff = Math.round(liveLh - expectedLh);
+            errors.push(`Line Height: Figma ${expectedLh}px → Live ${liveLh}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+          }
         }
-        // ── TEXT ALIGN ── (code.ts emits lowercase: 'left','center','right','justified')
+        // ── TEXT ALIGN ──
         if (design.ta && design.ta !== 'Mixed') {
           const ta = design.ta.toLowerCase();
-          // 'justified' from Figma maps to CSS 'justify'
           const expected = ta === 'justified' ? 'justify' : ta;
-          if (live.textAlign !== expected) errors.push(`Text Align: ${live.textAlign} (Expected ${expected})`);
+          if (live.textAlign !== expected) errors.push(`Text Align: Figma ${expected} → Live ${live.textAlign}`);
         }
-        // ── TEXT DECORATION ── (code.ts emits lowercase: 'underline','strikethrough')
+        // ── TEXT DECORATION ──
         if (design.td && design.td !== 'Mixed') {
           const expected = design.td === 'strikethrough' ? 'line-through' : design.td;
-          if (!live.textDecoration.includes(expected)) errors.push(`Text Decoration: ${live.textDecoration.split(' ')[0]} (Expected ${expected})`);
+          if (!live.textDecoration.includes(expected)) errors.push(`Text Decoration: Figma ${expected} → Live ${live.textDecoration.split(' ')[0]}`);
         }
-        // ── TEXT TRANSFORM ── (code.ts already maps to CSS: 'uppercase','lowercase','capitalize')
+        // ── TEXT TRANSFORM ──
         if (design.tt && design.tt !== 'Mixed') {
-          if (live.textTransform !== design.tt) errors.push(`Text Transform: ${live.textTransform} (Expected ${design.tt})`);
+          if (live.textTransform !== design.tt) errors.push(`Text Transform: Figma ${design.tt} → Live ${live.textTransform}`);
         }
-        // ── OPACITY ── (code.ts emits as 'op')
+        // ── OPACITY ──
         if (design.op !== undefined && design.op < 1) {
           const liveOp = parseFloat(live.opacity);
-          if (Math.abs(liveOp - design.op) > 0.05) errors.push(`Opacity: ${liveOp} (Expected ${design.op})`);
+          if (Math.abs(liveOp - design.op) > 0.05) errors.push(`Opacity: Figma ${design.op} → Live ${liveOp}`);
         }
         // ── BORDER WIDTH ──
         if (design.bw !== undefined && design.bw > 0) {
           const liveBw = parseFloat(live.borderWidth) || 0;
-          if (Math.abs(liveBw - design.bw) > 0.5) errors.push(`Border Width: ${liveBw}px (Expected ${design.bw}px)`);
+          if (Math.abs(liveBw - design.bw) > 0.5) errors.push(`Border Width: Figma ${design.bw}px → Live ${liveBw}px`);
         }
         // ── BORDER COLOR ──
         if (design.bc) {
           if (!colorsMatchBrowser(design.bc, live.borderColor)) {
-            errors.push(`Border Color: ${parseColorBrowser(live.borderColor)} (Expected ${design.bc.toLowerCase()})`);
+            errors.push(`Border Color: Figma ${design.bc.toLowerCase()} → Live ${parseColorBrowser(live.borderColor)}`);
           }
         }
-        // ── PADDING ── (code.ts emits as pad: [top, right, bottom, left])
+        // ── PADDING ──
         if (design.pad && Array.isArray(design.pad)) {
           const [pt, pr, pb, pl] = design.pad;
-          if (pt > 0) {
-            const livePt = parseFloat(live.paddingTop) || 0;
-            if (Math.abs(livePt - pt) > 1) errors.push(`Padding Top: ${livePt}px (Expected ${pt}px)`);
-          }
-          if (pr > 0) {
-            const livePr = parseFloat(live.paddingRight) || 0;
-            if (Math.abs(livePr - pr) > 1) errors.push(`Padding Right: ${livePr}px (Expected ${pr}px)`);
-          }
-          if (pb > 0) {
-            const livePb = parseFloat(live.paddingBottom) || 0;
-            if (Math.abs(livePb - pb) > 1) errors.push(`Padding Bottom: ${livePb}px (Expected ${pb}px)`);
-          }
-          if (pl > 0) {
-            const livePl = parseFloat(live.paddingLeft) || 0;
-            if (Math.abs(livePl - pl) > 1) errors.push(`Padding Left: ${livePl}px (Expected ${pl}px)`);
-          }
+          const sides = [
+            { name: 'Top', figma: pt, live: parseFloat(live.paddingTop) || 0 },
+            { name: 'Right', figma: pr, live: parseFloat(live.paddingRight) || 0 },
+            { name: 'Bottom', figma: pb, live: parseFloat(live.paddingBottom) || 0 },
+            { name: 'Left', figma: pl, live: parseFloat(live.paddingLeft) || 0 },
+          ];
+          sides.forEach(s => {
+            if (s.figma > 0) {
+              const diff = Math.round(s.live - s.figma);
+              if (Math.abs(diff) > 1) errors.push(`Padding ${s.name}: Figma ${s.figma}px → Live ${s.live}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+            }
+          });
         }
         // ── GAP ──
         if (design.gap !== undefined) {
           const liveGap = live.gap === 'normal' ? 0 : parseFloat(live.gap) || 0;
-          if (Math.abs(liveGap - design.gap) > 1) errors.push(`Gap: ${liveGap}px (Expected ${design.gap}px)`);
+          const diff = Math.round(liveGap - design.gap);
+          if (Math.abs(diff) > 1) errors.push(`Gap: Figma ${design.gap}px → Live ${liveGap}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
         }
         // ── WIDTH / HEIGHT ──
         if (design.w !== undefined && design.w > 0) {
-          if (Math.abs(rect.width - design.w) > 2) errors.push(`Width: ${Math.round(rect.width)}px (Expected ${design.w}px)`);
+          const diff = Math.round(rect.width - design.w);
+          if (Math.abs(diff) > 2) errors.push(`Width: Figma ${design.w}px → Live ${Math.round(rect.width)}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
         }
         if (design.h !== undefined && design.h > 0) {
-          if (Math.abs(rect.height - design.h) > 2) errors.push(`Height: ${Math.round(rect.height)}px (Expected ${design.h}px)`);
+          const diff = Math.round(rect.height - design.h);
+          if (Math.abs(diff) > 2) errors.push(`Height: Figma ${design.h}px → Live ${Math.round(rect.height)}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
         }
 
         if (errors.length > 0) {
+          // === DEDUP: check if this DOM element was already reported ===
+          // Use a unique key based on element tag + position to detect same element
+          const elKey = `${tag}_${Math.round(rect.left)}_${Math.round(rect.top)}_${Math.round(rect.width)}`;
+          if (seenElements.has(elKey)) {
+            // Merge errors into existing issue
+            const existingIdx = seenElements.get(elKey);
+            const existing = results[existingIdx];
+            if (existing) {
+              // Add new errors that aren't already listed
+              errors.forEach(e => {
+                if (!existing.details.includes(e)) existing.details.push(e);
+              });
+            }
+            return; // Don't create a new issue
+          }
+
           const layoutErrors = errors.filter(e => e.startsWith('Width:') || e.startsWith('Height:'));
           const styleErrors = errors.filter(e => !e.startsWith('Width:') && !e.startsWith('Height:'));
           
           tokenFailures++;
           
           if (layoutErrors.length > 0) {
+            const idx = results.length;
+            seenElements.set(elKey, idx);
             results.push({
               type: 'LAYOUT_SHIFT',
               element: elName,
@@ -303,6 +340,8 @@ async function runAudit() {
             });
           }
           if (styleErrors.length > 0) {
+            const idx = results.length;
+            if (!seenElements.has(elKey)) seenElements.set(elKey, idx);
             results.push({
               type: 'MINOR_DIFF',
               element: elName,
@@ -425,12 +464,12 @@ async function runAudit() {
             }
         }
 
-        // Merge overlapping or very close clusters (5px padding only)
+        // Merge overlapping or close clusters (20px padding for section-level grouping)
         for (let i = 0; i < clusters.length; i++) {
             for (let j = i + 1; j < clusters.length; j++) {
                 const c1 = clusters[i], c2 = clusters[j];
                 if (!c1 || !c2) continue;
-                const padding = 5;
+                const padding = 16;
                 if (c1.x < c2.x + c2.w + padding && c1.x + c1.w + padding > c2.x &&
                     c1.y < c2.y + c2.h + padding && c1.y + c1.h + padding > c2.y) {
                     
@@ -544,7 +583,22 @@ async function runAudit() {
     // combine all issues
     const tokenMinor = tokenReport.filter(r => r.type === 'MINOR_DIFF');
     const tokenLayout = tokenReport.filter(r => r.type === 'LAYOUT_SHIFT');
-    let allIssues = [...tokenMinor, ...tokenLayout, ...visualIssues];
+    
+    // === FILTER VISUAL ISSUES: skip pixelmatch boxes that overlap with already-detected token issues ===
+    const tokenRects = [...tokenMinor, ...tokenLayout].map(r => r.rect);
+    const filteredVisual = visualIssues.filter(vi => {
+      // If a visual box significantly overlaps a token-detected box, skip it (already reported)
+      for (const tr of tokenRects) {
+        const overlapX = Math.max(0, Math.min(vi.rect.x + vi.rect.w, tr.x + tr.w) - Math.max(vi.rect.x, tr.x));
+        const overlapY = Math.max(0, Math.min(vi.rect.y + vi.rect.h, tr.y + tr.h) - Math.max(vi.rect.y, tr.y));
+        const overlapArea = overlapX * overlapY;
+        const viArea = vi.rect.w * vi.rect.h;
+        if (viArea > 0 && overlapArea / viArea > 0.3) return false; // 30%+ overlap = skip
+      }
+      return true;
+    });
+    
+    let allIssues = [...tokenMinor, ...tokenLayout, ...filteredVisual];
     
     // Assign issue numbers sequentially
     allIssues.forEach((issue, index) => {
@@ -602,19 +656,23 @@ async function runAudit() {
     const screenshotBase64 = annotatedBuffer.toString('base64');
     const auditDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
-    // 3. Build Issue HTML List (no emoji circles, just text labels)
+    // 3. Build Issue HTML List — structured Figma→Live diff format
     const issueRows = allIssues.map((issue) => {
       const colorMap = { 'MAJOR_VISUAL': '#FF3B30', 'LAYOUT_SHIFT': '#FF9500', 'MINOR_DIFF': '#FFCC00' };
       const labelMap = { 'MAJOR_VISUAL': 'Major Visual Mismatch', 'LAYOUT_SHIFT': 'Layout Shift', 'MINOR_DIFF': 'Minor Design Diff' };
       const color = colorMap[issue.type] || '#FF3B30';
       const label = labelMap[issue.type] || 'Visual Mismatch';
+      // Format each detail as a separate row with arrow styling
+      const detailRows = issue.details.map(d => 
+        `<div style="padding:4px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#475569;">${d}</div>`
+      ).join('');
       return `
       <div style="display:flex;gap:14px;padding:16px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,0.06);border-left:4px solid ${color};">
         <div style="min-width:32px;height:32px;background:${color};color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">${issue.issueNum}</div>
         <div style="flex:1;">
-          <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:3px;">${label} &middot; ${issue.element}</div>
-          <div style="color:#64748b;font-size:13px;line-height:1.6;">${issue.details.join(' &middot; ')}</div>
-          <div style="color:#94a3b8;font-size:11px;margin-top:4px;">📍 Area: ${issue.rect.w}×${issue.rect.h}px at (${issue.rect.x}, ${issue.rect.y})</div>
+          <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:6px;">${label} &middot; ${issue.element}</div>
+          <div style="background:#f8fafc;padding:8px 12px;border-radius:8px;">${detailRows}</div>
+          <div style="color:#94a3b8;font-size:11px;margin-top:6px;">📍 Area: ${issue.rect.w}×${issue.rect.h}px at (${issue.rect.x}, ${issue.rect.y})</div>
         </div>
       </div>
     `}).join('');
@@ -654,7 +712,7 @@ async function runAudit() {
 
   <div style="padding:32px 48px;">
     <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">📸 Audit Screenshot</h2>
-    <div style="padding:20px;background:#fff;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,0.1);border:1px solid #e2e8f0;">
+    <div style="padding:12px;background:#fff;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,0.1);border:1px solid #e2e8f0;">
       <img src="data:image/png;base64,${screenshotBase64}" style="width:100%;display:block;border-radius:8px;" />
     </div>
   </div>
