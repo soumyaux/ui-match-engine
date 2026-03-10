@@ -22,6 +22,10 @@ on:
         description: "URL to Figma frame PNG in Supabase Storage"
         required: false
         default: ""
+      frame_name:
+        description: "Figma frame name"
+        required: false
+        default: ""
 
 jobs:
   audit:
@@ -72,6 +76,7 @@ jobs:
           TARGET_URL: ${{ github.event.inputs.url }}
           TOKENS_FILE: tokens.json
           FIGMA_IMAGE: figma-frame.png
+          FRAME_NAME: ${{ github.event.inputs.frame_name }}
 
       - name: 📸 Upload Visual Audit Report to Supabase
         if: success()
