@@ -635,12 +635,24 @@ async function runAudit() {
             `;
             document.body.appendChild(box);
 
-            // Badge: placed INSIDE the box at top-left corner (always visible, never clips)
+            // Badge: alternate corners (TL, TR, BR, BL) to avoid overlapping
+            const corner = issue.issueNum % 4;
+            let badgeTop, badgeLeft, labelLeft;
+            if (corner === 1) {        // top-left
+              badgeTop = by + 4; badgeLeft = bx + 4; labelLeft = bx + 30;
+            } else if (corner === 2) { // top-right
+              badgeTop = by + 4; badgeLeft = bx + bw - 26; labelLeft = bx + bw - 26 - 90;
+            } else if (corner === 3) { // bottom-right
+              badgeTop = by + bh - 26; badgeLeft = bx + bw - 26; labelLeft = bx + bw - 26 - 90;
+            } else {                   // bottom-left
+              badgeTop = by + bh - 26; badgeLeft = bx + 4; labelLeft = bx + 30;
+            }
+
             const badge = document.createElement('div');
             badge.textContent = String(issue.issueNum);
             badge.style.cssText = `
               position: absolute; z-index: 10001; pointer-events: none;
-              top: ${by + 4}px; left: ${bx + 4}px;
+              top: ${badgeTop}px; left: ${badgeLeft}px;
               min-width: 22px; height: 22px; padding: 0 5px;
               background: ${color}; color: white; border-radius: 11px;
               font-family: -apple-system, sans-serif; font-size: 11px; font-weight: 700;
@@ -649,12 +661,12 @@ async function runAudit() {
             `;
             document.body.appendChild(badge);
 
-            // Element name label below the badge
+            // Element name label next to the badge
             const label = document.createElement('div');
             label.textContent = issue.element;
             label.style.cssText = `
               position: absolute; z-index: 10001; pointer-events: none;
-              top: ${by + 4}px; left: ${bx + 30}px;
+              top: ${badgeTop}px; left: ${Math.max(0, labelLeft)}px;
               height: 22px; padding: 0 8px;
               background: ${color}; color: white; border-radius: 4px;
               font-family: -apple-system, sans-serif; font-size: 10px; font-weight: 600;
