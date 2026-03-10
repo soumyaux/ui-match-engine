@@ -126,27 +126,38 @@ async function runAudit() {
         if (!a || !b) return true;
         return a === b;
       }
+      // Walk UP to the nearest top-level/semantic parent component
       function getElementName(el) {
         if (!el) return 'Unknown';
-        if (el.tagName === 'IMG') return el.alt || 'Image';
-        if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') return (el.textContent?.trim().substring(0, 30) || 'Button');
-        if (el.tagName === 'A') return 'Link: ' + (el.textContent?.trim().substring(0, 25) || 'Link');
-        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return el.placeholder || el.name || 'Input Field';
-        if (el.tagName === 'NAV') return 'Navigation';
-        if (el.tagName === 'HEADER') return 'Header';
-        if (el.tagName === 'FOOTER') return 'Footer';
-        if (el.tagName === 'H1' || el.tagName === 'H2' || el.tagName === 'H3') return el.tagName + ': ' + (el.textContent?.trim().substring(0, 25) || '');
-        if (el.tagName === 'P') return 'Text: ' + (el.textContent?.trim().substring(0, 25) || 'Block');
-        if (el.tagName === 'SVG' || el.closest?.('svg')) return 'Icon / SVG';
-        if (el.tagName === 'VIDEO') return 'Video';
-        if (el.id) return el.tagName.toLowerCase() + '#' + el.id;
-        if (el.className && typeof el.className === 'string') {
-          const cls = el.className.split(' ').filter(c => c.length > 0 && c.length < 30)[0];
-          if (cls) return el.tagName.toLowerCase() + '.' + cls;
+        // Walk up to find the nearest meaningful parent
+        let current = el;
+        const semanticTags = ['NAV','HEADER','FOOTER','MAIN','ASIDE','SECTION','FORM','TABLE','DIALOG'];
+        while (current && current !== document.body && current !== document.documentElement) {
+          const tag = current.tagName;
+          // Semantic HTML elements
+          if (semanticTags.includes(tag)) {
+            const names = { 'NAV': 'Navigation', 'HEADER': 'Header', 'FOOTER': 'Footer', 'MAIN': 'Main Content', 'ASIDE': 'Sidebar', 'SECTION': 'Section', 'FORM': 'Form', 'TABLE': 'Table', 'DIALOG': 'Dialog' };
+            return names[tag] || tag.toLowerCase();
+          }
+          // Elements with aria-labels or meaningful roles
+          if (current.getAttribute('role')) {
+            const role = current.getAttribute('role');
+            const roleNames = { 'navigation': 'Navigation', 'banner': 'Header', 'main': 'Main Content', 'contentinfo': 'Footer', 'complementary': 'Sidebar', 'dialog': 'Dialog', 'tablist': 'Tab Bar', 'toolbar': 'Toolbar', 'search': 'Search' };
+            if (roleNames[role]) return roleNames[role];
+          }
+          // Specific interactive elements
+          if (tag === 'BUTTON' || current.getAttribute('role') === 'button') return current.textContent?.trim().substring(0, 25) || 'Button';
+          if (tag === 'A') return 'Link: ' + (current.textContent?.trim().substring(0, 20) || 'Link');
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return current.placeholder || current.name || 'Input';
+          if (tag === 'IMG') return current.alt || 'Image';
+          if (tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'H4') return 'Heading: ' + (current.textContent?.trim().substring(0, 20) || '');
+          current = current.parentElement;
         }
-        const text = el.textContent?.trim().substring(0, 25);
+        // Fallback: use the original element's info
+        if (el.id) return el.tagName.toLowerCase() + '#' + el.id;
+        const text = el.textContent?.trim().substring(0, 20);
         if (text && text.length > 2) return text;
-        return el.tagName.toLowerCase();
+        return 'Component';
       }
 
       const results = [];
@@ -171,7 +182,25 @@ async function runAudit() {
         checkedPositions.add(posKey);
         
         const el = document.elementFromPoint(cx, cy);
-        if (!el || el === document.body || el === document.documentElement) return;
+        
+        // === MISSING ELEMENT: Figma has content here but live page has nothing ===
+        if (!el || el === document.body || el === document.documentElement) {
+          // Only report if the Figma token is large enough to be a real component (not a spacer)
+          if ((design.w || 0) > 30 && (design.h || 0) > 30) {
+            const missingKey = `missing_${Math.round(cx / 20)}_${Math.round(cy / 20)}`;
+            if (!seenElements.has(missingKey)) {
+              seenElements.set(missingKey, results.length);
+              tokenFailures++;
+              results.push({
+                type: 'LAYOUT_SHIFT',
+                element: 'Missing Element',
+                details: [`Element in Figma ("${name}") not found on live page at position (${Math.round(cx)}, ${Math.round(cy)}). Size: ${design.w}×${design.h}px`],
+                rect: { x: Math.round(design.x || 0), y: Math.round(design.y || 0), w: Math.round(design.w || 50), h: Math.round(design.h || 50) }
+              });
+            }
+          }
+          return;
+        }
         
         // === SKIP IRRELEVANT ELEMENTS ===
         // Skip SVG graphs, charts, canvas, iframes, video — these are dynamic content not relevant to UI audit
@@ -660,21 +689,6 @@ async function runAudit() {
               box-shadow: 0 1px 4px rgba(0,0,0,0.3);
             `;
             document.body.appendChild(badge);
-
-            // Element name label next to the badge
-            const label = document.createElement('div');
-            label.textContent = issue.element;
-            label.style.cssText = `
-              position: absolute; z-index: 10001; pointer-events: none;
-              top: ${badgeTop}px; left: ${Math.max(0, labelLeft)}px;
-              height: 22px; padding: 0 8px;
-              background: ${color}; color: white; border-radius: 4px;
-              font-family: -apple-system, sans-serif; font-size: 10px; font-weight: 600;
-              display: flex; align-items: center;
-              box-shadow: 0 1px 4px rgba(0,0,0,0.3);
-              max-width: ${Math.max(bw - 40, 80)}px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
-            `;
-            document.body.appendChild(label);
         });
     }, allIssues);
 
