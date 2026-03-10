@@ -58,7 +58,7 @@ async function runAudit() {
     // ══════════════════════════════════════════
     // PHASE 0: Navigation
     // ══════════════════════════════════════════
-    console.log(`🌸 Starting Hybrid Visual Engine Audit for: ${targetUrl}`);
+    console.log(`🌸 Starting Visual Engine Audit for: ${targetUrl}`);
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
 
@@ -131,28 +131,28 @@ async function runAudit() {
       tokens.forEach((design) => {
         const name = design.name || 'unknown';
         const escaped = CSS.escape(name);
-        // Find by testid, name attribute, or class name (Hybrid strategy matches)
         const el = document.querySelector(`[data-testid="${name}"]`) || 
                    document.querySelector(`[name="${name}"]`) || 
                    document.querySelector(`.${escaped}`);
 
-        // If skipped/not found, we ignore. Pixelmatch catches missing things.
         if (!el) return;
 
         const live = window.getComputedStyle(el);
         const rect = el.getBoundingClientRect();
         const errors = [];
 
-        // ── TYPOGRAPHY & DESIGN CHECKS ──
+        // ── FONT SIZE ──
         if (design.fs && design.fs !== 'Mixed') {
           const liveSize = parseFloat(live.fontSize);
           if (Math.abs(liveSize - design.fs) > 0.5) errors.push(`Font Size: ${liveSize}px (Expected ${design.fs}px)`);
         }
+        // ── FONT FAMILY ──
         if (design.ff && design.ff !== 'Mixed' && live.fontFamily) {
           if (!live.fontFamily.toLowerCase().includes(design.ff.toLowerCase())) {
             errors.push(`Font Family: ${live.fontFamily.split(',')[0].trim()} (Expected ${design.ff})`);
           }
         }
+        // ── FONT WEIGHT ──
         if (design.fw && design.fw !== 'Mixed') {
           const weightMap = { 'Thin': '100', 'ExtraLight': '200', 'Light': '300', 'Regular': '400', 'Medium': '500', 'SemiBold': '600', 'Bold': '700', 'ExtraBold': '800', 'Black': '900' };
           const expectedWeight = weightMap[design.fw] || design.fw;
@@ -160,24 +160,102 @@ async function runAudit() {
             errors.push(`Font Weight: ${live.fontWeight} (Expected ${expectedWeight})`);
           }
         }
+        // ── TEXT COLOR ──
         if (design.color) {
           if (!colorsMatchBrowser(design.color, live.color)) {
             errors.push(`Text Color: ${parseColorBrowser(live.color)} (Expected ${design.color.toLowerCase()})`);
           }
         }
+        // ── BACKGROUND COLOR ──
         if (design.bg && design.bg.length > 0) {
           const liveBg = parseColorBrowser(live.backgroundColor);
           if (liveBg && liveBg !== 'transparent' && liveBg !== 'rgba(0, 0, 0, 0)' && !colorsMatchBrowser(design.bg[0], live.backgroundColor)) {
             errors.push(`Background: ${liveBg} (Expected ${design.bg[0].toLowerCase()})`);
           }
         }
+        // ── BORDER RADIUS ──
         if (design.br !== undefined && design.br !== 'Mixed' && design.br > 0) {
           const liveRadius = parseFloat(live.borderRadius) || 0;
           if (Math.abs(liveRadius - design.br) > 1) errors.push(`Border Radius: ${liveRadius}px (Expected ${design.br}px)`);
         }
-        
+        // ── LETTER SPACING ──
+        if (design.ls !== undefined && design.ls !== 'Mixed') {
+          const liveLs = live.letterSpacing === 'normal' ? 0 : parseFloat(live.letterSpacing) || 0;
+          const expectedLs = typeof design.ls === 'number' ? design.ls : 0;
+          if (Math.abs(liveLs - expectedLs) > 0.5) errors.push(`Letter Spacing: ${liveLs}px (Expected ${expectedLs}px)`);
+        }
+        // ── LINE HEIGHT ──
+        if (design.lh !== undefined && design.lh !== 'Mixed') {
+          const liveLh = live.lineHeight === 'normal' ? 0 : parseFloat(live.lineHeight) || 0;
+          const expectedLh = typeof design.lh === 'number' ? design.lh : 0;
+          if (expectedLh > 0 && liveLh > 0 && Math.abs(liveLh - expectedLh) > 1) errors.push(`Line Height: ${liveLh}px (Expected ${expectedLh}px)`);
+        }
+        // ── TEXT ALIGN ── (code.ts emits lowercase: 'left','center','right','justified')
+        if (design.ta && design.ta !== 'Mixed') {
+          const ta = design.ta.toLowerCase();
+          // 'justified' from Figma maps to CSS 'justify'
+          const expected = ta === 'justified' ? 'justify' : ta;
+          if (live.textAlign !== expected) errors.push(`Text Align: ${live.textAlign} (Expected ${expected})`);
+        }
+        // ── TEXT DECORATION ── (code.ts emits lowercase: 'underline','strikethrough')
+        if (design.td && design.td !== 'Mixed') {
+          const expected = design.td === 'strikethrough' ? 'line-through' : design.td;
+          if (!live.textDecoration.includes(expected)) errors.push(`Text Decoration: ${live.textDecoration.split(' ')[0]} (Expected ${expected})`);
+        }
+        // ── TEXT TRANSFORM ── (code.ts already maps to CSS: 'uppercase','lowercase','capitalize')
+        if (design.tt && design.tt !== 'Mixed') {
+          if (live.textTransform !== design.tt) errors.push(`Text Transform: ${live.textTransform} (Expected ${design.tt})`);
+        }
+        // ── OPACITY ── (code.ts emits as 'op')
+        if (design.op !== undefined && design.op < 1) {
+          const liveOp = parseFloat(live.opacity);
+          if (Math.abs(liveOp - design.op) > 0.05) errors.push(`Opacity: ${liveOp} (Expected ${design.op})`);
+        }
+        // ── BORDER WIDTH ──
+        if (design.bw !== undefined && design.bw > 0) {
+          const liveBw = parseFloat(live.borderWidth) || 0;
+          if (Math.abs(liveBw - design.bw) > 0.5) errors.push(`Border Width: ${liveBw}px (Expected ${design.bw}px)`);
+        }
+        // ── BORDER COLOR ──
+        if (design.bc) {
+          if (!colorsMatchBrowser(design.bc, live.borderColor)) {
+            errors.push(`Border Color: ${parseColorBrowser(live.borderColor)} (Expected ${design.bc.toLowerCase()})`);
+          }
+        }
+        // ── PADDING ── (code.ts emits as pad: [top, right, bottom, left])
+        if (design.pad && Array.isArray(design.pad)) {
+          const [pt, pr, pb, pl] = design.pad;
+          if (pt > 0) {
+            const livePt = parseFloat(live.paddingTop) || 0;
+            if (Math.abs(livePt - pt) > 1) errors.push(`Padding Top: ${livePt}px (Expected ${pt}px)`);
+          }
+          if (pr > 0) {
+            const livePr = parseFloat(live.paddingRight) || 0;
+            if (Math.abs(livePr - pr) > 1) errors.push(`Padding Right: ${livePr}px (Expected ${pr}px)`);
+          }
+          if (pb > 0) {
+            const livePb = parseFloat(live.paddingBottom) || 0;
+            if (Math.abs(livePb - pb) > 1) errors.push(`Padding Bottom: ${livePb}px (Expected ${pb}px)`);
+          }
+          if (pl > 0) {
+            const livePl = parseFloat(live.paddingLeft) || 0;
+            if (Math.abs(livePl - pl) > 1) errors.push(`Padding Left: ${livePl}px (Expected ${pl}px)`);
+          }
+        }
+        // ── GAP ──
+        if (design.gap !== undefined) {
+          const liveGap = live.gap === 'normal' ? 0 : parseFloat(live.gap) || 0;
+          if (Math.abs(liveGap - design.gap) > 1) errors.push(`Gap: ${liveGap}px (Expected ${design.gap}px)`);
+        }
+        // ── WIDTH / HEIGHT ──
+        if (design.w !== undefined && design.w > 0) {
+          if (Math.abs(rect.width - design.w) > 2) errors.push(`Width: ${Math.round(rect.width)}px (Expected ${design.w}px)`);
+        }
+        if (design.h !== undefined && design.h > 0) {
+          if (Math.abs(rect.height - design.h) > 2) errors.push(`Height: ${Math.round(rect.height)}px (Expected ${design.h}px)`);
+        }
+
         if (errors.length > 0) {
-          // Separate layout errors (Width/Height) from styling errors
           const layoutErrors = errors.filter(e => e.startsWith('Width:') || e.startsWith('Height:'));
           const styleErrors = errors.filter(e => !e.startsWith('Width:') && !e.startsWith('Height:'));
           
@@ -334,17 +412,88 @@ async function runAudit() {
             }
         }
 
-        // Filter out tiny boxes (noise) and limit to max 25 boxes
-        const finalClusters = clusters
-          .filter(c => c !== null && c.w > 15 && c.h > 15)
-          .slice(0, 25);
+        // Filter out tiny boxes (noise) — show ALL errors, no cap
+        const finalClusters = clusters.filter(c => c !== null && c.w > 15 && c.h > 15);
         console.log(`📦 Grouped visual errors into ${finalClusters.length} bounding boxes.`);
 
-        finalClusters.forEach(box => {
+        // --- SMART BOX ANALYSIS: identify DOM element + classify error type ---
+        // We need to pass these box rects to page.evaluate to identify what DOM
+        // element lives at the center of each box.
+        const boxNames = await page.evaluate((boxes) => {
+          return boxes.map(box => {
+            const cx = box.x + box.w / 2;
+            const cy = box.y + box.h / 2;
+            const el = document.elementFromPoint(cx, cy);
+            if (!el) return 'Unknown Element';
+            // Build a readable name
+            if (el.tagName === 'IMG') return el.alt || 'Image';
+            if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') return el.textContent?.trim().substring(0, 30) || 'Button';
+            if (el.tagName === 'A') return 'Link: ' + (el.textContent?.trim().substring(0, 25) || el.href?.substring(0, 30) || 'Link');
+            if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return el.placeholder || el.name || 'Input Field';
+            if (el.tagName === 'NAV') return 'Navigation Bar';
+            if (el.tagName === 'HEADER') return 'Header Section';
+            if (el.tagName === 'FOOTER') return 'Footer Section';
+            if (el.tagName === 'H1' || el.tagName === 'H2' || el.tagName === 'H3') return 'Heading: ' + (el.textContent?.trim().substring(0, 30) || el.tagName);
+            if (el.tagName === 'P') return 'Text Block';
+            if (el.tagName === 'SVG' || el.closest('svg')) return 'Icon / SVG';
+            if (el.tagName === 'VIDEO') return 'Video Player';
+            // Use class or id for generic divs/sections
+            if (el.id) return el.tagName.toLowerCase() + '#' + el.id;
+            if (el.className && typeof el.className === 'string') {
+              const cls = el.className.split(' ').filter(c => c.length > 0 && c.length < 30)[0];
+              if (cls) return el.tagName.toLowerCase() + '.' + cls;
+            }
+            const text = el.textContent?.trim().substring(0, 30);
+            if (text && text.length > 2) return text;
+            return el.tagName.toLowerCase() + ' element';
+          });
+        }, finalClusters);
+
+        // Analyze pixel color differences in each box region to classify the error
+        finalClusters.forEach((box, idx) => {
+            // Sample average colors in Figma vs Live within this box
+            let figmaR = 0, figmaG = 0, figmaB = 0, liveR = 0, liveG = 0, liveB = 0;
+            let sampleCount = 0;
+            const step = Math.max(2, Math.floor(Math.min(box.w, box.h) / 5));
+            for (let sy = box.y; sy < box.y + box.h && sy < height; sy += step) {
+                for (let sx = box.x; sx < box.x + box.w && sx < width; sx += step) {
+                    const pidx = (width * sy + sx) << 2;
+                    figmaR += cropFigma[pidx]; figmaG += cropFigma[pidx+1]; figmaB += cropFigma[pidx+2];
+                    liveR += cropLive[pidx]; liveG += cropLive[pidx+1]; liveB += cropLive[pidx+2];
+                    sampleCount++;
+                }
+            }
+
+            let reason = 'Visual differences detected in this area.';
+            if (sampleCount > 0) {
+                figmaR = Math.round(figmaR / sampleCount);
+                figmaG = Math.round(figmaG / sampleCount);
+                figmaB = Math.round(figmaB / sampleCount);
+                liveR = Math.round(liveR / sampleCount);
+                liveG = Math.round(liveG / sampleCount);
+                liveB = Math.round(liveB / sampleCount);
+
+                const colorDiff = Math.abs(figmaR - liveR) + Math.abs(figmaG - liveG) + Math.abs(figmaB - liveB);
+                const figmaBrightness = (figmaR + figmaG + figmaB) / 3;
+                const liveBrightness = (liveR + liveG + liveB) / 3;
+                const brightDiff = Math.abs(figmaBrightness - liveBrightness);
+
+                const fHex = `#${figmaR.toString(16).padStart(2,'0')}${figmaG.toString(16).padStart(2,'0')}${figmaB.toString(16).padStart(2,'0')}`;
+                const lHex = `#${liveR.toString(16).padStart(2,'0')}${liveG.toString(16).padStart(2,'0')}${liveB.toString(16).padStart(2,'0')}`;
+
+                if (brightDiff > 120) {
+                    reason = `Missing or extra content (Figma avg: ${fHex}, Live avg: ${lHex}). A component may have been added or removed.`;
+                } else if (colorDiff > 80) {
+                    reason = `Color mismatch (Figma avg: ${fHex}, Live avg: ${lHex}). Background, button, or element color differs from design.`;
+                } else {
+                    reason = `Shape/spacing difference (Figma avg: ${fHex}, Live avg: ${lHex}). Subtle layout or styling deviation.`;
+                }
+            }
+
             visualIssues.push({
                 type: 'MAJOR_VISUAL',
-                element: 'Visual Mismatch Region',
-                details: ['Structural or component differences detected in this area (missing/extra components or layout shift).'],
+                element: boxNames[idx] || 'Visual Mismatch Region',
+                details: [reason],
                 rect: box
             });
         });
@@ -417,55 +566,45 @@ async function runAudit() {
     const screenshotBase64 = annotatedBuffer.toString('base64');
     const auditDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
-    // 3. Build Issue HTML List
+    // 3. Build Issue HTML List (no emoji circles, just text labels)
     const issueRows = allIssues.map((issue) => {
       const colorMap = { 'MAJOR_VISUAL': '#FF3B30', 'LAYOUT_SHIFT': '#FF9500', 'MINOR_DIFF': '#FFCC00' };
-      const iconMap = { 'MAJOR_VISUAL': '🔴', 'LAYOUT_SHIFT': '🟠', 'MINOR_DIFF': '🟡' };
       const labelMap = { 'MAJOR_VISUAL': 'Major Visual Mismatch', 'LAYOUT_SHIFT': 'Layout Shift', 'MINOR_DIFF': 'Minor Design Diff' };
       const color = colorMap[issue.type] || '#FF3B30';
-      const icon = iconMap[issue.type] || '🔴';
       const label = labelMap[issue.type] || 'Visual Mismatch';
       return `
       <div style="display:flex;gap:14px;padding:16px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,0.06);border-left:4px solid ${color};">
         <div style="min-width:32px;height:32px;background:${color};color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">${issue.issueNum}</div>
         <div style="flex:1;">
-          <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:3px;">${icon} ${label} &middot; ${issue.element}</div>
+          <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:3px;">${label} &middot; ${issue.element}</div>
           <div style="color:#64748b;font-size:13px;line-height:1.6;">${issue.details.join(' &middot; ')}</div>
-          <div style="color:#94a3b8;font-size:11px;margin-top:4px;">📍 Area bounds: ${issue.rect.w}×${issue.rect.h}px</div>
+          <div style="color:#94a3b8;font-size:11px;margin-top:4px;">📍 Area: ${issue.rect.w}×${issue.rect.h}px at (${issue.rect.x}, ${issue.rect.y})</div>
         </div>
       </div>
     `}).join('');
 
-    // 4. Build Final Output HTML
+    // 4. Build Final Output HTML — 2 KPI cards only + padded screenshot
     const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f1f5f9;">
   <div style="background:linear-gradient(135deg,#0f5ec4 0%,#3da5ff 100%);padding:40px 48px;color:#fff;">
     <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;">
       <div style="font-size:28px;font-weight:800;letter-spacing:-0.5px;">UI Match</div>
-      <div style="font-size:13px;opacity:0.7;border-left:2px solid rgba(255,255,255,0.3);padding-left:16px;">Hybrid Audit Report</div>
+      <div style="font-size:13px;opacity:0.7;border-left:2px solid rgba(255,255,255,0.3);padding-left:16px;">Visual Audit Report</div>
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:8px 32px;font-size:13px;opacity:0.9;">
       <div>🎨 <strong>Figma Frame:</strong> ${frameName}</div>
       <div>🌍 <strong>Website:</strong> ${targetUrl}</div>
       <div>📅 <strong>Date:</strong> ${auditDate}</div>
-      <div>📐 <strong>Viewport Check:</strong> ${frameWidth}×${frameHeight}px</div>
+      <div>📐 <strong>Viewport:</strong> ${frameWidth}×${frameHeight}px</div>
     </div>
     <div style="display:flex;gap:16px;margin-top:24px;">
-      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;min-width:80px;">
-        <div style="font-size:26px;font-weight:800;">${matchScore}%</div>
+      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;min-width:100px;">
+        <div style="font-size:28px;font-weight:800;">${matchScore}%</div>
         <div style="font-size:11px;opacity:0.8;">True Match Score</div>
       </div>
-      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;min-width:80px;">
-        <div style="font-size:26px;font-weight:800;">${allIssues.length}</div>
+      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;min-width:100px;">
+        <div style="font-size:28px;font-weight:800;">${allIssues.length}</div>
         <div style="font-size:11px;opacity:0.8;">Issues Found</div>
-      </div>
-      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;min-width:80px;">
-        <div style="font-size:26px;font-weight:800;">${tokenPassCount}</div>
-        <div style="font-size:11px;opacity:0.8;">Passed Rules</div>
-      </div>
-      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;min-width:80px;">
-        <div style="font-size:26px;font-weight:800;">${visualIssues.length}</div>
-        <div style="font-size:11px;opacity:0.8;">Missing / Shifted</div>
       </div>
     </div>
   </div>
@@ -473,13 +612,15 @@ async function runAudit() {
   <div style="padding:16px 48px;background:#e2e8f0;border-bottom:1px solid #cbd5e1;display:flex;gap:24px;font-size:13px;color:#334155;align-items:center;">
     <strong>Legend:</strong>
     <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FFCC00;"></span> Minor Spacing/Typo Diff</span>
-    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FF9500;"></span> Layout Shift (Reserved)</span>
+    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FF9500;"></span> Layout Shift</span>
     <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FF3B30;"></span> Major Visual Mismatch</span>
   </div>
 
   <div style="padding:32px 48px;">
     <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">📸 Audit Screenshot</h2>
-    <img src="data:image/png;base64,${screenshotBase64}" style="width:100%;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,0.1);border:1px solid #e2e8f0;" />
+    <div style="padding:20px;background:#fff;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,0.1);border:1px solid #e2e8f0;">
+      <img src="data:image/png;base64,${screenshotBase64}" style="width:100%;display:block;border-radius:8px;" />
+    </div>
   </div>
   <div style="padding:0 48px 48px;">
     <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">🔍 Discrepancy Log</h2>
@@ -494,7 +635,7 @@ async function runAudit() {
     await reportPage.waitForTimeout(500);
     await reportPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
     await reportPage.close();
-    console.log('📸 Hybrid report saved as visual-audit-diff.png');
+    console.log('📸 Visual report saved as visual-audit-diff.png');
 
     fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(tokenReport, null, 2));
     console.log(`✅ Audit completed. Score: ${matchScore}%. ${allIssues.length} total issues found.`);
