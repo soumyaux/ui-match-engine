@@ -478,7 +478,7 @@ async function runAudit() {
             const width = Math.min(img1.width, img2.width);
             const height = Math.min(img1.height, img2.height);
 
-            const diff = new PNG({ width, height });
+            const tempDiff = new PNG({ width, height });
             const crop1 = new Uint8Array(width * height * 4);
             const crop2 = new Uint8Array(width * height * 4);
 
@@ -500,9 +500,57 @@ async function runAudit() {
                 }
             }
 
-            pixelmatch(crop1, crop2, diff.data, width, height, { threshold: 0.1, diffColor: [255, 0, 0] });
+            pixelmatch(crop1, crop2, tempDiff.data, width, height, { threshold: 0.1, diffColor: [255, 0, 0] });
+            
+            const PADDING = 20;
+            const fullWidth = width * 2 + PADDING;
+            const diff = new PNG({ width: fullWidth, height });
+
+            const GRID = 50;
+            const diffCells = new Set();
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const idx = (width * y + x) << 2;
+                    if (tempDiff.data[idx] === 255 && tempDiff.data[idx+1] === 0 && tempDiff.data[idx+2] === 0) {
+                        const gx = Math.floor(x / GRID);
+                        const gy = Math.floor(y / GRID);
+                        diffCells.add(`${gx},${gy}`);
+                    }
+                }
+            }
+
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < fullWidth; x++) {
+                    const idxDst = (fullWidth * y + x) << 2;
+                    if (x < width) {
+                        const idx1 = (img1.width * y + x) << 2;
+                        diff.data[idxDst] = img1.data[idx1];
+                        diff.data[idxDst+1] = img1.data[idx1+1];
+                        diff.data[idxDst+2] = img1.data[idx1+2];
+                        diff.data[idxDst+3] = 255;
+                    } else if (x >= width && x < width + PADDING) {
+                        diff.data[idxDst] = 240; diff.data[idxDst+1] = 240; diff.data[idxDst+2] = 240; diff.data[idxDst+3] = 255;
+                    } else {
+                        const rX = x - width - PADDING;
+                        const idx2 = (img2.width * y + rX) << 2;
+                        let r = img2.data[idx2]; let g = img2.data[idx2+1]; let b = img2.data[idx2+2];
+                        
+                        const gx = Math.floor(rX / GRID);
+                        const gy = Math.floor(y / GRID);
+                        if (diffCells.has(`${gx},${gy}`)) {
+                            r = Math.min(255, r * 0.6 + 255 * 0.4);
+                            g = g * 0.6; b = b * 0.6;
+                            const cellX = rX % GRID; const cellY = y % GRID;
+                            if (cellX < 2 || cellX > GRID-3 || cellY < 2 || cellY > GRID-3) {
+                                r = 255; g = 0; b = 0;
+                            }
+                        }
+                        diff.data[idxDst] = r; diff.data[idxDst+1] = g; diff.data[idxDst+2] = b; diff.data[idxDst+3] = 255;
+                    }
+                }
+            }
             fs.writeFileSync('playwright-report/visual-audit-diff.png', PNG.sync.write(diff));
-            console.log('📸 Pixelmatch comparison completed and saved as visual-audit-diff.png');
+            console.log('📸 Visual heatmap comparison completed and saved as visual-audit-diff.png');
         } catch (err) {
             console.error('⚠️ Could not run pixelmatch comparison:', err);
             fs.copyFileSync('playwright-report/live-screenshot.png', 'playwright-report/visual-audit-diff.png');
