@@ -179,7 +179,7 @@ async function runAudit() {
         if (errors.length > 0) {
           tokenFailures++;
           results.push({
-            type: 'TOKEN_FAIL',
+            type: 'MINOR_DIFF',
             element: name,
             details: errors,
             rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) }
@@ -320,7 +320,7 @@ async function runAudit() {
 
         finalClusters.forEach(box => {
             visualIssues.push({
-                type: 'VISUAL_FAIL',
+                type: 'MAJOR_VISUAL',
                 element: 'Visual Mismatch Region',
                 details: ['Structural or component differences detected in this area (missing/extra components or layout shift).'],
                 rect: box
@@ -337,8 +337,8 @@ async function runAudit() {
     // ══════════════════════════════════════════
     console.log('🖨️ Generating Professional HTML Report...');
     
-    // Combine token failures and visual failures
-    const tokenFailures = tokenReport.filter(r => r.type === 'TOKEN_FAIL');
+    // combine all issues
+    const tokenFailures = tokenReport.filter(r => r.type === 'MINOR_DIFF');
     let allIssues = [...tokenFailures, ...visualIssues];
     
     // Assign issue numbers sequentially
@@ -346,23 +346,31 @@ async function runAudit() {
         issue.issueNum = index + 1;
     });
 
-    // Compute REAL Match Score (Passes vs Fails)
+    // Compute REAL Match Score (Passed tokens vs Total Items Checked)
     const tokenPassCount = tokenReport.filter(r => r.type === 'TOKEN_PASS').length;
-    // Score Formula: Valid matched tokens / (Valid matched tokens + Broken Tokens + Huge Visual Regions)
     const totalChecks = tokenPassCount + tokenFailures.length + visualIssues.length;
     const matchScore = totalChecks > 0 ? Math.round((tokenPassCount / totalChecks) * 100) : 0;
 
-    // We need to inject the CSS for the markers onto the live page, take the marked screenshot, and then build the full report page.
     // 1. Draw markers on the live page via page.evaluate
     await page.evaluate((issues) => {
         issues.forEach(issue => {
+            const isVisual = issue.type === 'MAJOR_VISUAL';
+            const color = isVisual ? '#FF3B30' : '#FFCC00';
+            const bgColor = isVisual ? 'rgba(255, 59, 48, 0.05)' : 'rgba(255, 204, 0, 0.05)';
+            
+            // Add 6px padding to bounding box
+            const bx = issue.rect.x - 6;
+            const by = issue.rect.y - 6;
+            const bw = issue.rect.w + 12;
+            const bh = issue.rect.h + 12;
+
             const box = document.createElement('div');
             box.style.cssText = `
               position: absolute; z-index: 10000; pointer-events: none;
-              top: ${issue.rect.y}px; left: ${issue.rect.x}px;
-              width: ${issue.rect.w}px; height: ${issue.rect.h}px;
-              border: 2px dashed ${issue.type === 'VISUAL_FAIL' ? '#FF9500' : '#FF3B30'};
-              background: ${issue.type === 'VISUAL_FAIL' ? 'rgba(255, 149, 0, 0.05)' : 'rgba(255, 59, 48, 0.05)'};
+              top: ${by}px; left: ${bx}px;
+              width: ${bw}px; height: ${bh}px;
+              border: 2px dashed ${color};
+              background: ${bgColor};
             `;
             document.body.appendChild(box);
 
@@ -370,9 +378,9 @@ async function runAudit() {
             badge.textContent = String(issue.issueNum);
             badge.style.cssText = `
               position: absolute; z-index: 10001; pointer-events: none;
-              top: ${issue.rect.y - 14}px; left: ${issue.rect.x - 14}px;
+              top: ${by - 14}px; left: ${bx - 14}px;
               width: 28px; height: 28px;
-              background: ${issue.type === 'VISUAL_FAIL' ? '#FF9500' : '#FF3B30'}; color: white; border-radius: 50%;
+              background: ${color}; color: white; border-radius: 50%;
               font-family: -apple-system, sans-serif; font-size: 13px; font-weight: 700;
               display: flex; align-items: center; justify-content: center;
               box-shadow: 0 2px 8px rgba(0,0,0,0.35); border: 2.5px solid white;
@@ -388,9 +396,9 @@ async function runAudit() {
 
     // 3. Build Issue HTML List
     const issueRows = allIssues.map((issue) => {
-      const color = issue.type === 'VISUAL_FAIL' ? '#FF9500' : '#FF3B30';
-      const icon = issue.type === 'VISUAL_FAIL' ? '🖼️' : '🎨';
-      const label = issue.type === 'VISUAL_FAIL' ? 'Visual Diff' : 'Design Rule';
+      const color = issue.type === 'MAJOR_VISUAL' ? '#FF3B30' : '#FFCC00';
+      const icon = issue.type === 'MAJOR_VISUAL' ? '🔴' : '🟡';
+      const label = issue.type === 'MAJOR_VISUAL' ? 'Major Visual Mismatch' : 'Minor Design Diff';
       return `
       <div style="display:flex;gap:14px;padding:16px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,0.06);border-left:4px solid ${color};">
         <div style="min-width:32px;height:32px;background:${color};color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">${issue.issueNum}</div>
@@ -429,8 +437,20 @@ async function runAudit() {
         <div style="font-size:26px;font-weight:800;">${tokenPassCount}</div>
         <div style="font-size:11px;opacity:0.8;">Passed Rules</div>
       </div>
+      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;min-width:80px;">
+        <div style="font-size:26px;font-weight:800;">${visualIssues.length}</div>
+        <div style="font-size:11px;opacity:0.8;">Missing / Shifted</div>
+      </div>
     </div>
   </div>
+  
+  <div style="padding:16px 48px;background:#e2e8f0;border-bottom:1px solid #cbd5e1;display:flex;gap:24px;font-size:13px;color:#334155;align-items:center;">
+    <strong>Legend:</strong>
+    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FFCC00;"></span> 🟡 Minor Spacing/Typo Diff</span>
+    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FF9500;"></span> 🟠 Layout Shift (Reserved)</span>
+    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FF3B30;"></span> 🔴 Major Visual Mismatch</span>
+  </div>
+
   <div style="padding:32px 48px;">
     <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">📸 Audit Screenshot</h2>
     <img src="data:image/png;base64,${screenshotBase64}" style="width:100%;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,0.1);border:1px solid #e2e8f0;" />
