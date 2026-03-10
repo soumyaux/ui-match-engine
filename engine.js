@@ -469,7 +469,7 @@ async function runAudit() {
             for (let j = i + 1; j < clusters.length; j++) {
                 const c1 = clusters[i], c2 = clusters[j];
                 if (!c1 || !c2) continue;
-                const padding = 16;
+                const padding = 20;
                 if (c1.x < c2.x + c2.w + padding && c1.x + c1.w + padding > c2.x &&
                     c1.y < c2.y + c2.h + padding && c1.y + c1.h + padding > c2.y) {
                     
