@@ -65,7 +65,7 @@ jobs:
 
       - name: Install & Run Engine
         run: |
-          npm install playwright
+          npm install playwright pixelmatch pngjs
           npx playwright install --with-deps chromium
           node engine.js
         env:
