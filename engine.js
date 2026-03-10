@@ -600,7 +600,10 @@ async function runAudit() {
     
     let allIssues = [...tokenMinor, ...tokenLayout, ...filteredVisual];
     
-    // Assign issue numbers sequentially
+    // Sort issues top-to-bottom (by Y position) so header = #1, footer = last
+    allIssues.sort((a, b) => a.rect.y - b.rect.y);
+    
+    // Assign issue numbers sequentially (now in top-to-bottom order)
     allIssues.forEach((issue, index) => {
         issue.issueNum = index + 1;
     });
@@ -628,24 +631,22 @@ async function runAudit() {
               position: absolute; z-index: 10000; pointer-events: none;
               top: ${by}px; left: ${bx}px;
               width: ${bw}px; height: ${bh}px;
-              border: 2px dashed ${color};
+              border: 2px solid ${color};
               background: ${bgColor};
             `;
             document.body.appendChild(box);
 
-            // Badge: clamp to page bounds so it never hides above/left of viewport
-            const badgeTop = Math.max(2, by - 14);
-            const badgeLeft = Math.max(2, bx - 14);
+            // Badge: placed INSIDE the box at top-left corner (always visible, never clips)
             const badge = document.createElement('div');
             badge.textContent = String(issue.issueNum);
             badge.style.cssText = `
               position: absolute; z-index: 10001; pointer-events: none;
-              top: ${badgeTop}px; left: ${badgeLeft}px;
-              width: 28px; height: 28px;
-              background: ${color}; color: white; border-radius: 50%;
-              font-family: -apple-system, sans-serif; font-size: 13px; font-weight: 700;
+              top: ${by + 4}px; left: ${bx + 4}px;
+              min-width: 22px; height: 22px; padding: 0 5px;
+              background: ${color}; color: white; border-radius: 11px;
+              font-family: -apple-system, sans-serif; font-size: 11px; font-weight: 700;
               display: flex; align-items: center; justify-content: center;
-              box-shadow: 0 2px 8px rgba(0,0,0,0.35); border: 2.5px solid white;
+              box-shadow: 0 1px 4px rgba(0,0,0,0.3);
             `;
             document.body.appendChild(badge);
         });
