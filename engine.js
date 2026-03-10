@@ -363,7 +363,9 @@ async function runAudit() {
 
           // ── 11. GAP (Item Spacing) ──
           if (design.gap && design.gap > 0) {
-            const liveGap = parseFloat(live.gap) || parseFloat(live.columnGap) || parseFloat(live.rowGap) || 0;
+            let liveGap = 0;
+            if (live.gap !== 'normal' && live.gap !== '') liveGap = parseFloat(live.gap);
+            if (isNaN(liveGap)) liveGap = 0;
             if (Math.abs(liveGap - design.gap) > 2) {
               errors.push(`Gap: ${liveGap}px → Expected ${design.gap}px`);
             }
@@ -387,7 +389,9 @@ async function runAudit() {
 
           // ── 14. LETTER SPACING ──
           if (design.ls !== undefined) {
-            const liveLS = parseFloat(live.letterSpacing) || 0;
+            let liveLS = 0;
+            if (live.letterSpacing !== 'normal' && live.letterSpacing !== '') liveLS = parseFloat(live.letterSpacing);
+            if (isNaN(liveLS)) liveLS = 0;
             if (Math.abs(liveLS - design.ls) > 0.5) {
               errors.push(`Letter Spacing: ${liveLS}px → Expected ${design.ls}px`);
             }
@@ -395,7 +399,10 @@ async function runAudit() {
 
           // ── 15. LINE HEIGHT ──
           if (design.lh !== undefined) {
-            const liveLH = parseFloat(live.lineHeight) || 0;
+            let liveLH = parseFloat(live.lineHeight);
+            if (isNaN(liveLH) || live.lineHeight === 'normal') {
+              liveLH = parseFloat(live.fontSize) * 1.2;
+            }
             if (liveLH > 0 && Math.abs(liveLH - design.lh) > 2) {
               errors.push(`Line Height: ${Math.round(liveLH)}px → Expected ${design.lh}px`);
             }
@@ -457,7 +464,52 @@ async function runAudit() {
     // ══════════════════════════════════════════
     // PHASE 3: Screenshot & Results
     // ══════════════════════════════════════════
-    await page.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
+    await page.screenshot({ path: 'playwright-report/live-screenshot.png', fullPage: true });
+
+    if (figmaImagePath && fs.existsSync(figmaImagePath)) {
+        try {
+            const { PNG } = require('pngjs');
+            const pixelmatch = require('pixelmatch');
+
+            const img1 = PNG.sync.read(fs.readFileSync(figmaImagePath));
+            const img2 = PNG.sync.read(fs.readFileSync('playwright-report/live-screenshot.png'));
+
+            const width = Math.min(img1.width, img2.width);
+            const height = Math.min(img1.height, img2.height);
+
+            const diff = new PNG({ width, height });
+            const crop1 = new Uint8Array(width * height * 4);
+            const crop2 = new Uint8Array(width * height * 4);
+
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const idx1 = (img1.width * y + x) << 2;
+                    const idx2 = (img2.width * y + x) << 2;
+                    const idxDst = (width * y + x) << 2;
+
+                    crop1[idxDst] = img1.data[idx1];
+                    crop1[idxDst + 1] = img1.data[idx1 + 1];
+                    crop1[idxDst + 2] = img1.data[idx1 + 2];
+                    crop1[idxDst + 3] = img1.data[idx1 + 3];
+
+                    crop2[idxDst] = img2.data[idx2];
+                    crop2[idxDst + 1] = img2.data[idx2 + 1];
+                    crop2[idxDst + 2] = img2.data[idx2 + 2];
+                    crop2[idxDst + 3] = img2.data[idx2 + 3];
+                }
+            }
+
+            pixelmatch(crop1, crop2, diff.data, width, height, { threshold: 0.1, diffColor: [255, 0, 0] });
+            fs.writeFileSync('playwright-report/visual-audit-diff.png', PNG.sync.write(diff));
+            console.log('📸 Pixelmatch comparison completed and saved as visual-audit-diff.png');
+        } catch (err) {
+            console.error('⚠️ Could not run pixelmatch comparison:', err);
+            fs.copyFileSync('playwright-report/live-screenshot.png', 'playwright-report/visual-audit-diff.png');
+        }
+    } else {
+        fs.copyFileSync('playwright-report/live-screenshot.png', 'playwright-report/visual-audit-diff.png');
+    }
+
     fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(report, null, 2));
 
     const failCount = report.filter(r => r.status === 'FAIL' && r.element !== '__summary__').length;
