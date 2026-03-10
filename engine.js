@@ -47,8 +47,8 @@ async function runAudit() {
       figmaTokens = [];
     }
 
-    // Extract frame metadata safely
-    const frameName = (figmaTokens[0] && figmaTokens[0]._frameName) || 'Selected Frame';
+    // Extract frame metadata safely — prefer env var (from worker→GitHub dispatch)
+    const frameName = process.env.FRAME_NAME || (figmaTokens[0] && figmaTokens[0]._frameName) || 'Selected Frame';
     const frameWidth = (figmaTokens[0] && figmaTokens[0]._frameWidth) || 1440;
     const frameHeight = (figmaTokens[0] && figmaTokens[0]._frameHeight) || 900;
 
@@ -177,13 +177,28 @@ async function runAudit() {
         }
         
         if (errors.length > 0) {
+          // Separate layout errors (Width/Height) from styling errors
+          const layoutErrors = errors.filter(e => e.startsWith('Width:') || e.startsWith('Height:'));
+          const styleErrors = errors.filter(e => !e.startsWith('Width:') && !e.startsWith('Height:'));
+          
           tokenFailures++;
-          results.push({
-            type: 'MINOR_DIFF',
-            element: name,
-            details: errors,
-            rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) }
-          });
+          
+          if (layoutErrors.length > 0) {
+            results.push({
+              type: 'LAYOUT_SHIFT',
+              element: name,
+              details: layoutErrors,
+              rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) }
+            });
+          }
+          if (styleErrors.length > 0) {
+            results.push({
+              type: 'MINOR_DIFF',
+              element: name,
+              details: styleErrors,
+              rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) }
+            });
+          }
         } else {
           results.push({ type: 'TOKEN_PASS', element: name });
         }
@@ -199,6 +214,7 @@ async function runAudit() {
     fs.writeFileSync('playwright-report/live-screenshot.png', liveScreenshotBuffer);
 
     let visualIssues = [];
+    let pixelMatchPercent = 100; // default if no Figma image
     const figmaImagePath = process.env.FIGMA_IMAGE;
 
     if (figmaImagePath && fs.existsSync(figmaImagePath)) {
@@ -233,11 +249,13 @@ async function runAudit() {
         }
 
         const mismatchedPixels = pixelmatch(cropFigma, cropLive, rawDiff.data, width, height, { threshold: 0.1 });
-        console.log(`🔍 Pixelmatch found ${mismatchedPixels} differing pixels.`);
+        const totalPixels = width * height;
+        pixelMatchPercent = Math.round(((totalPixels - mismatchedPixels) / totalPixels) * 100);
+        console.log(`🔍 Pixelmatch: ${mismatchedPixels} differing pixels out of ${totalPixels} (${pixelMatchPercent}% match).`);
 
         // --- GRID CLUSTERING ALGORITHM ---
-        // We divide the screen into a 30x30 grid. If a grid cell has enough red pixels, we mark it "hot".
-        const GRID_SIZE = 30;
+        // Small grid (10px) for per-component precision
+        const GRID_SIZE = 10;
         const cols = Math.ceil(width / GRID_SIZE);
         const rows = Math.ceil(height / GRID_SIZE);
         const grid = Array(rows).fill(0).map(() => Array(cols).fill(0));
@@ -296,26 +314,30 @@ async function runAudit() {
             }
         }
 
-        // Merge overlapping or very close clusters
+        // Merge overlapping or very close clusters (5px padding only)
         for (let i = 0; i < clusters.length; i++) {
             for (let j = i + 1; j < clusters.length; j++) {
                 const c1 = clusters[i], c2 = clusters[j];
                 if (!c1 || !c2) continue;
-                // Expand slightly for merge check
-                const padding = 40;
+                const padding = 5;
                 if (c1.x < c2.x + c2.w + padding && c1.x + c1.w + padding > c2.x &&
                     c1.y < c2.y + c2.h + padding && c1.y + c1.h + padding > c2.y) {
                     
-                    c1.x = Math.min(c1.x, c2.x);
-                    c1.y = Math.min(c1.y, c2.y);
-                    c1.w = Math.max(c1.x + c1.w, c2.x + c2.w) - c1.x;
-                    c1.h = Math.max(c1.y + c1.h, c2.y + c2.h) - c1.y;
-                    clusters[j] = null; // Mark for deletion
+                    const newX = Math.min(c1.x, c2.x);
+                    const newY = Math.min(c1.y, c2.y);
+                    c1.w = Math.max(c1.x + c1.w, c2.x + c2.w) - newX;
+                    c1.h = Math.max(c1.y + c1.h, c2.y + c2.h) - newY;
+                    c1.x = newX;
+                    c1.y = newY;
+                    clusters[j] = null;
                 }
             }
         }
 
-        const finalClusters = clusters.filter(c => c !== null);
+        // Filter out tiny boxes (noise) and limit to max 25 boxes
+        const finalClusters = clusters
+          .filter(c => c !== null && c.w > 15 && c.h > 15)
+          .slice(0, 25);
         console.log(`📦 Grouped visual errors into ${finalClusters.length} bounding boxes.`);
 
         finalClusters.forEach(box => {
@@ -338,25 +360,26 @@ async function runAudit() {
     console.log('🖨️ Generating Professional HTML Report...');
     
     // combine all issues
-    const tokenFailures = tokenReport.filter(r => r.type === 'MINOR_DIFF');
-    let allIssues = [...tokenFailures, ...visualIssues];
+    const tokenMinor = tokenReport.filter(r => r.type === 'MINOR_DIFF');
+    const tokenLayout = tokenReport.filter(r => r.type === 'LAYOUT_SHIFT');
+    let allIssues = [...tokenMinor, ...tokenLayout, ...visualIssues];
     
     // Assign issue numbers sequentially
     allIssues.forEach((issue, index) => {
         issue.issueNum = index + 1;
     });
 
-    // Compute REAL Match Score (Passed tokens vs Total Items Checked)
+    // Use the REAL pixel-level match score
+    const matchScore = pixelMatchPercent;
     const tokenPassCount = tokenReport.filter(r => r.type === 'TOKEN_PASS').length;
-    const totalChecks = tokenPassCount + tokenFailures.length + visualIssues.length;
-    const matchScore = totalChecks > 0 ? Math.round((tokenPassCount / totalChecks) * 100) : 0;
 
     // 1. Draw markers on the live page via page.evaluate
     await page.evaluate((issues) => {
         issues.forEach(issue => {
-            const isVisual = issue.type === 'MAJOR_VISUAL';
-            const color = isVisual ? '#FF3B30' : '#FFCC00';
-            const bgColor = isVisual ? 'rgba(255, 59, 48, 0.05)' : 'rgba(255, 204, 0, 0.05)';
+            const colorMap = { 'MAJOR_VISUAL': '#FF3B30', 'LAYOUT_SHIFT': '#FF9500', 'MINOR_DIFF': '#FFCC00' };
+            const bgMap = { 'MAJOR_VISUAL': 'rgba(255,59,48,0.05)', 'LAYOUT_SHIFT': 'rgba(255,149,0,0.05)', 'MINOR_DIFF': 'rgba(255,204,0,0.05)' };
+            const color = colorMap[issue.type] || '#FF3B30';
+            const bgColor = bgMap[issue.type] || 'rgba(255,59,48,0.05)';
             
             // Add 6px padding to bounding box
             const bx = issue.rect.x - 6;
@@ -396,9 +419,12 @@ async function runAudit() {
 
     // 3. Build Issue HTML List
     const issueRows = allIssues.map((issue) => {
-      const color = issue.type === 'MAJOR_VISUAL' ? '#FF3B30' : '#FFCC00';
-      const icon = issue.type === 'MAJOR_VISUAL' ? '🔴' : '🟡';
-      const label = issue.type === 'MAJOR_VISUAL' ? 'Major Visual Mismatch' : 'Minor Design Diff';
+      const colorMap = { 'MAJOR_VISUAL': '#FF3B30', 'LAYOUT_SHIFT': '#FF9500', 'MINOR_DIFF': '#FFCC00' };
+      const iconMap = { 'MAJOR_VISUAL': '🔴', 'LAYOUT_SHIFT': '🟠', 'MINOR_DIFF': '🟡' };
+      const labelMap = { 'MAJOR_VISUAL': 'Major Visual Mismatch', 'LAYOUT_SHIFT': 'Layout Shift', 'MINOR_DIFF': 'Minor Design Diff' };
+      const color = colorMap[issue.type] || '#FF3B30';
+      const icon = iconMap[issue.type] || '🔴';
+      const label = labelMap[issue.type] || 'Visual Mismatch';
       return `
       <div style="display:flex;gap:14px;padding:16px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,0.06);border-left:4px solid ${color};">
         <div style="min-width:32px;height:32px;background:${color};color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">${issue.issueNum}</div>
@@ -446,9 +472,9 @@ async function runAudit() {
   
   <div style="padding:16px 48px;background:#e2e8f0;border-bottom:1px solid #cbd5e1;display:flex;gap:24px;font-size:13px;color:#334155;align-items:center;">
     <strong>Legend:</strong>
-    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FFCC00;"></span> 🟡 Minor Spacing/Typo Diff</span>
-    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FF9500;"></span> 🟠 Layout Shift (Reserved)</span>
-    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FF3B30;"></span> 🔴 Major Visual Mismatch</span>
+    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FFCC00;"></span> Minor Spacing/Typo Diff</span>
+    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FF9500;"></span> Layout Shift (Reserved)</span>
+    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FF3B30;"></span> Major Visual Mismatch</span>
   </div>
 
   <div style="padding:32px 48px;">
