@@ -469,7 +469,8 @@ async function runAudit() {
     if (figmaImagePath && fs.existsSync(figmaImagePath)) {
         try {
             const { PNG } = require('pngjs');
-            const pixelmatch = require('pixelmatch');
+            const pixelmatchModule = require('pixelmatch');
+            const pixelmatch = pixelmatchModule.default || pixelmatchModule;
 
             const img1 = PNG.sync.read(fs.readFileSync(figmaImagePath));
             const img2 = PNG.sync.read(fs.readFileSync('playwright-report/live-screenshot.png'));
