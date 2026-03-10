@@ -359,7 +359,7 @@ async function runAudit() {
             }
         }
 
-        const mismatchedPixels = pixelmatch(cropFigma, cropLive, rawDiff.data, width, height, { threshold: 0.05 });
+        const mismatchedPixels = pixelmatch(cropFigma, cropLive, rawDiff.data, width, height, { threshold: 0.15 });
         const totalPixels = width * height;
         pixelMatchPercent = Math.round(((totalPixels - mismatchedPixels) / totalPixels) * 100);
         console.log(`🔍 Pixelmatch: ${mismatchedPixels} differing pixels out of ${totalPixels} (${pixelMatchPercent}% match).`);
@@ -389,7 +389,7 @@ async function runAudit() {
         
         for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
-                if (grid[r][c] > 5 && !visited[r][c]) { // 5 pixels min to care about a cell
+                if (grid[r][c] > 15 && !visited[r][c]) { // 15 pixels min to care about a cell
                     // DFS to find cluster bounds
                     let minR = r, maxR = r, minC = c, maxC = c;
                     const stack = [[r, c]];
@@ -405,7 +405,7 @@ async function runAudit() {
                             for (let dc = -1; dc <= 1; dc++) {
                                 const nr = currR + dr, nc = currC + dc;
                                 if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
-                                  if (grid[nr][nc] > 5 && !visited[nr][nc]) {
+                                  if (grid[nr][nc] > 15 && !visited[nr][nc]) {
                                       visited[nr][nc] = true;
                                       stack.push([nr, nc]);
                                   }
@@ -445,7 +445,7 @@ async function runAudit() {
             }
         }
 
-        // Filter out tiny boxes (noise) — show ALL errors, no cap
+        // Filter out tiny boxes (noise) — show ALL real errors
         const finalClusters = clusters.filter(c => c !== null && c.w > 15 && c.h > 15);
         console.log(`📦 Grouped visual errors into ${finalClusters.length} bounding boxes.`);
 
