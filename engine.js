@@ -105,7 +105,9 @@ async function runAudit() {
     // ══════════════════════════════════════════
     console.log('🔍 Running CSS Token Validation...');
     
-    // Evaluate CSS properties on matched DOM elements
+    // Evaluate CSS properties by POSITION-BASED matching
+    // Instead of querySelector (Figma names never match DOM), we use elementFromPoint
+    // at the Figma token's (x, y) coordinates to find the real live DOM element.
     const tokenReport = await page.evaluate((tokens) => {
       function parseColorBrowser(raw) {
         if (!raw) return null;
@@ -124,21 +126,52 @@ async function runAudit() {
         if (!a || !b) return true;
         return a === b;
       }
+      function getElementName(el) {
+        if (!el) return 'Unknown';
+        if (el.tagName === 'IMG') return el.alt || 'Image';
+        if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') return (el.textContent?.trim().substring(0, 30) || 'Button');
+        if (el.tagName === 'A') return 'Link: ' + (el.textContent?.trim().substring(0, 25) || 'Link');
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return el.placeholder || el.name || 'Input Field';
+        if (el.tagName === 'NAV') return 'Navigation';
+        if (el.tagName === 'HEADER') return 'Header';
+        if (el.tagName === 'FOOTER') return 'Footer';
+        if (el.tagName === 'H1' || el.tagName === 'H2' || el.tagName === 'H3') return el.tagName + ': ' + (el.textContent?.trim().substring(0, 25) || '');
+        if (el.tagName === 'P') return 'Text: ' + (el.textContent?.trim().substring(0, 25) || 'Block');
+        if (el.tagName === 'SVG' || el.closest?.('svg')) return 'Icon / SVG';
+        if (el.tagName === 'VIDEO') return 'Video';
+        if (el.id) return el.tagName.toLowerCase() + '#' + el.id;
+        if (el.className && typeof el.className === 'string') {
+          const cls = el.className.split(' ').filter(c => c.length > 0 && c.length < 30)[0];
+          if (cls) return el.tagName.toLowerCase() + '.' + cls;
+        }
+        const text = el.textContent?.trim().substring(0, 25);
+        if (text && text.length > 2) return text;
+        return el.tagName.toLowerCase();
+      }
 
       const results = [];
       let tokenFailures = 0;
+      // Track checked positions to avoid duplicate checks at the same spot
+      const checkedPositions = new Set();
 
       tokens.forEach((design) => {
         const name = design.name || 'unknown';
-        const escaped = CSS.escape(name);
-        const el = document.querySelector(`[data-testid="${name}"]`) || 
-                   document.querySelector(`[name="${name}"]`) || 
-                   document.querySelector(`.${escaped}`);
-
-        if (!el) return;
+        // Use position-based matching: find the live DOM element at the Figma token's center coordinates
+        const cx = (design.x || 0) + (design.w || 0) / 2;
+        const cy = (design.y || 0) + (design.h || 0) / 2;
+        
+        // Skip if coordinates are invalid or already checked nearby
+        if (cx <= 0 && cy <= 0) return;
+        const posKey = Math.round(cx / 5) + ',' + Math.round(cy / 5);
+        if (checkedPositions.has(posKey)) return;
+        checkedPositions.add(posKey);
+        
+        const el = document.elementFromPoint(cx, cy);
+        if (!el || el === document.body || el === document.documentElement) return;
 
         const live = window.getComputedStyle(el);
         const rect = el.getBoundingClientRect();
+        const elName = getElementName(el);
         const errors = [];
 
         // ── FONT SIZE ──
@@ -264,7 +297,7 @@ async function runAudit() {
           if (layoutErrors.length > 0) {
             results.push({
               type: 'LAYOUT_SHIFT',
-              element: name,
+              element: elName,
               details: layoutErrors,
               rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) }
             });
@@ -272,13 +305,13 @@ async function runAudit() {
           if (styleErrors.length > 0) {
             results.push({
               type: 'MINOR_DIFF',
-              element: name,
+              element: elName,
               details: styleErrors,
               rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) }
             });
           }
         } else {
-          results.push({ type: 'TOKEN_PASS', element: name });
+          results.push({ type: 'TOKEN_PASS', element: elName });
         }
       });
       return results;
@@ -326,7 +359,7 @@ async function runAudit() {
             }
         }
 
-        const mismatchedPixels = pixelmatch(cropFigma, cropLive, rawDiff.data, width, height, { threshold: 0.1 });
+        const mismatchedPixels = pixelmatch(cropFigma, cropLive, rawDiff.data, width, height, { threshold: 0.05 });
         const totalPixels = width * height;
         pixelMatchPercent = Math.round(((totalPixels - mismatchedPixels) / totalPixels) * 100);
         console.log(`🔍 Pixelmatch: ${mismatchedPixels} differing pixels out of ${totalPixels} (${pixelMatchPercent}% match).`);
@@ -356,7 +389,7 @@ async function runAudit() {
         
         for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
-                if (grid[r][c] > 10 && !visited[r][c]) { // 10 pixels min to care about a cell
+                if (grid[r][c] > 5 && !visited[r][c]) { // 5 pixels min to care about a cell
                     // DFS to find cluster bounds
                     let minR = r, maxR = r, minC = c, maxC = c;
                     const stack = [[r, c]];
@@ -372,7 +405,7 @@ async function runAudit() {
                             for (let dc = -1; dc <= 1; dc++) {
                                 const nr = currR + dr, nc = currC + dc;
                                 if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
-                                  if (grid[nr][nc] > 10 && !visited[nr][nc]) {
+                                  if (grid[nr][nc] > 5 && !visited[nr][nc]) {
                                       visited[nr][nc] = true;
                                       stack.push([nr, nc]);
                                   }
@@ -531,8 +564,8 @@ async function runAudit() {
             const bgColor = bgMap[issue.type] || 'rgba(255,59,48,0.05)';
             
             // Add 6px padding to bounding box
-            const bx = issue.rect.x - 6;
-            const by = issue.rect.y - 6;
+            const bx = Math.max(0, issue.rect.x - 6);
+            const by = Math.max(0, issue.rect.y - 6);
             const bw = issue.rect.w + 12;
             const bh = issue.rect.h + 12;
 
@@ -546,11 +579,14 @@ async function runAudit() {
             `;
             document.body.appendChild(box);
 
+            // Badge: clamp to page bounds so it never hides above/left of viewport
+            const badgeTop = Math.max(2, by - 14);
+            const badgeLeft = Math.max(2, bx - 14);
             const badge = document.createElement('div');
             badge.textContent = String(issue.issueNum);
             badge.style.cssText = `
               position: absolute; z-index: 10001; pointer-events: none;
-              top: ${by - 14}px; left: ${bx - 14}px;
+              top: ${badgeTop}px; left: ${badgeLeft}px;
               width: 28px; height: 28px;
               background: ${color}; color: white; border-radius: 50%;
               font-family: -apple-system, sans-serif; font-size: 13px; font-weight: 700;
@@ -628,14 +664,22 @@ async function runAudit() {
   </div>
 </body></html>`;
 
-    // 5. Render final PNG report via Playwright
+    // 5. Render final PDF report via Playwright
     const reportPage = await browser.newPage();
     await reportPage.setViewportSize({ width: 1200, height: 800 });
     await reportPage.setContent(reportHtml, { waitUntil: 'load' });
     await reportPage.waitForTimeout(500);
+    // Generate PDF for crisp text and smaller file size
+    await reportPage.pdf({ 
+      path: 'playwright-report/visual-audit-diff.pdf', 
+      format: 'A4',
+      printBackground: true,
+      margin: { top: '0', right: '0', bottom: '0', left: '0' }
+    });
+    // Also keep a PNG for backward compatibility (email attachments, etc.)
     await reportPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
     await reportPage.close();
-    console.log('📸 Visual report saved as visual-audit-diff.png');
+    console.log('� Visual report saved as visual-audit-diff.pdf + .png');
 
     fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(tokenReport, null, 2));
     console.log(`✅ Audit completed. Score: ${matchScore}%. ${allIssues.length} total issues found.`);
