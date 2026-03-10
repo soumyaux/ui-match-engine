@@ -233,6 +233,7 @@ async function runAudit() {
 
       let processedCount = 0;
       const totalTokens = tokens.length;
+      let issueNumber = 0;
 
       tokens.forEach((design) => {
         processedCount++;
@@ -432,22 +433,29 @@ async function runAudit() {
 
           // ── HIGHLIGHT MISMATCHES ON PAGE ──
           if (errors.length > 0) {
-            el.style.outline = '2px dashed red';
-            el.style.outlineOffset = '2px';
-            el.style.backgroundColor = 'rgba(255, 0, 0, 0.05)';
-
-            const badge = document.createElement('div');
-            badge.innerHTML = `<b>${name}</b><br>${errors.join('<br>')}`;
-            badge.style.cssText = `
-              position: absolute; background: #ff0000; color: white;
-              font-family: sans-serif; font-size: 10px; padding: 4px 8px;
-              border-radius: 4px; z-index: 10000; pointer-events: none;
-              box-shadow: 0 2px 8px rgba(0,0,0,0.2); max-width: 300px;
-            `;
+            issueNumber++;
             const rect = el.getBoundingClientRect();
-            badge.style.top = `${window.scrollY + rect.top - 30}px`;
-            badge.style.left = `${window.scrollX + rect.left}px`;
-            document.body.appendChild(badge);
+
+            el.style.outline = '2px solid #FF3B30';
+            el.style.outlineOffset = '3px';
+
+            const marker = document.createElement('div');
+            marker.textContent = String(issueNumber);
+            marker.style.cssText = `
+              position: absolute;
+              top: ${window.scrollY + rect.top - 14}px;
+              left: ${window.scrollX + rect.left - 14}px;
+              width: 28px; height: 28px;
+              background: #FF3B30; color: white;
+              border-radius: 50%;
+              font-family: -apple-system, sans-serif;
+              font-size: 13px; font-weight: 700;
+              display: flex; align-items: center; justify-content: center;
+              z-index: 10000; pointer-events: none;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+              border: 2.5px solid white;
+            `;
+            document.body.appendChild(marker);
           }
 
           results.push({
@@ -462,109 +470,77 @@ async function runAudit() {
     }, { tokens: figmaTokens, matchResults, threshold });
 
     // ══════════════════════════════════════════
-    // PHASE 3: Screenshot & Results
+    // PHASE 3: Screenshot & HTML Report
     // ══════════════════════════════════════════
-    await page.screenshot({ path: 'playwright-report/live-screenshot.png', fullPage: true });
+    console.log('📸 Taking annotated screenshot...');
+    const screenshotBuffer = await page.screenshot({ fullPage: true });
+    fs.writeFileSync('playwright-report/live-screenshot.png', screenshotBuffer);
 
-    if (figmaImagePath && fs.existsSync(figmaImagePath)) {
-        try {
-            const { PNG } = require('pngjs');
-            const pixelmatchModule = require('pixelmatch');
-            const pixelmatch = pixelmatchModule.default || pixelmatchModule;
-
-            const img1 = PNG.sync.read(fs.readFileSync(figmaImagePath));
-            const img2 = PNG.sync.read(fs.readFileSync('playwright-report/live-screenshot.png'));
-
-            const width = Math.min(img1.width, img2.width);
-            const height = Math.min(img1.height, img2.height);
-
-            const tempDiff = new PNG({ width, height });
-            const crop1 = new Uint8Array(width * height * 4);
-            const crop2 = new Uint8Array(width * height * 4);
-
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const idx1 = (img1.width * y + x) << 2;
-                    const idx2 = (img2.width * y + x) << 2;
-                    const idxDst = (width * y + x) << 2;
-
-                    crop1[idxDst] = img1.data[idx1];
-                    crop1[idxDst + 1] = img1.data[idx1 + 1];
-                    crop1[idxDst + 2] = img1.data[idx1 + 2];
-                    crop1[idxDst + 3] = img1.data[idx1 + 3];
-
-                    crop2[idxDst] = img2.data[idx2];
-                    crop2[idxDst + 1] = img2.data[idx2 + 1];
-                    crop2[idxDst + 2] = img2.data[idx2 + 2];
-                    crop2[idxDst + 3] = img2.data[idx2 + 3];
-                }
-            }
-
-            pixelmatch(crop1, crop2, tempDiff.data, width, height, { threshold: 0.1, diffColor: [255, 0, 0] });
-            
-            const PADDING = 20;
-            const fullWidth = width * 2 + PADDING;
-            const diff = new PNG({ width: fullWidth, height });
-
-            const GRID = 50;
-            const diffCells = new Set();
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const idx = (width * y + x) << 2;
-                    if (tempDiff.data[idx] === 255 && tempDiff.data[idx+1] === 0 && tempDiff.data[idx+2] === 0) {
-                        const gx = Math.floor(x / GRID);
-                        const gy = Math.floor(y / GRID);
-                        diffCells.add(`${gx},${gy}`);
-                    }
-                }
-            }
-
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < fullWidth; x++) {
-                    const idxDst = (fullWidth * y + x) << 2;
-                    if (x < width) {
-                        const idx1 = (img1.width * y + x) << 2;
-                        diff.data[idxDst] = img1.data[idx1];
-                        diff.data[idxDst+1] = img1.data[idx1+1];
-                        diff.data[idxDst+2] = img1.data[idx1+2];
-                        diff.data[idxDst+3] = 255;
-                    } else if (x >= width && x < width + PADDING) {
-                        diff.data[idxDst] = 240; diff.data[idxDst+1] = 240; diff.data[idxDst+2] = 240; diff.data[idxDst+3] = 255;
-                    } else {
-                        const rX = x - width - PADDING;
-                        const idx2 = (img2.width * y + rX) << 2;
-                        let r = img2.data[idx2]; let g = img2.data[idx2+1]; let b = img2.data[idx2+2];
-                        
-                        const gx = Math.floor(rX / GRID);
-                        const gy = Math.floor(y / GRID);
-                        if (diffCells.has(`${gx},${gy}`)) {
-                            r = Math.min(255, r * 0.6 + 255 * 0.4);
-                            g = g * 0.6; b = b * 0.6;
-                            const cellX = rX % GRID; const cellY = y % GRID;
-                            if (cellX < 2 || cellX > GRID-3 || cellY < 2 || cellY > GRID-3) {
-                                r = 255; g = 0; b = 0;
-                            }
-                        }
-                        diff.data[idxDst] = r; diff.data[idxDst+1] = g; diff.data[idxDst+2] = b; diff.data[idxDst+3] = 255;
-                    }
-                }
-            }
-            fs.writeFileSync('playwright-report/visual-audit-diff.png', PNG.sync.write(diff));
-            console.log('📸 Visual heatmap comparison completed and saved as visual-audit-diff.png');
-        } catch (err) {
-            console.error('⚠️ Could not run pixelmatch comparison:', err);
-            fs.copyFileSync('playwright-report/live-screenshot.png', 'playwright-report/visual-audit-diff.png');
-        }
-    } else {
-        fs.copyFileSync('playwright-report/live-screenshot.png', 'playwright-report/visual-audit-diff.png');
-    }
-
-    fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(report, null, 2));
-
-    const failCount = report.filter(r => r.status === 'FAIL' && r.element !== '__summary__').length;
+    const failedIssues = report.filter(r => r.status === 'FAIL' && r.element !== '__summary__');
     const passCount = report.filter(r => r.status === 'PASS' && r.element !== '__summary__').length;
     const notFoundCount = report.filter(r => r.status === 'NOT_FOUND').length;
-    console.log(`✅ Audit completed. ${passCount} passed, ${failCount} issues, ${notFoundCount} not found — across ${figmaTokens.length} tokens.`);
+    const screenshotBase64 = screenshotBuffer.toString('base64');
+    const auditDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const frameName = (figmaTokens[0] && figmaTokens[0]._frameName) || 'Selected Frame';
+
+    const issueRows = failedIssues.map((issue, i) => `
+      <div style="display:flex;gap:14px;padding:16px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,0.06);border-left:4px solid #FF3B30;">
+        <div style="min-width:32px;height:32px;background:#FF3B30;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">${i + 1}</div>
+        <div style="flex:1;">
+          <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:3px;">${issue.element}</div>
+          <div style="color:#64748b;font-size:13px;line-height:1.6;">${issue.details.join(' &middot; ')}</div>
+        </div>
+      </div>
+    `).join('');
+
+    const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f1f5f9;">
+  <div style="background:linear-gradient(135deg,#0f5ec4 0%,#3da5ff 100%);padding:40px 48px;color:#fff;">
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;">
+      <div style="font-size:28px;font-weight:800;letter-spacing:-0.5px;">UI Match</div>
+      <div style="font-size:13px;opacity:0.7;border-left:2px solid rgba(255,255,255,0.3);padding-left:16px;">Visual Audit Report</div>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px 32px;font-size:13px;opacity:0.9;">
+      <div>🎨 <strong>Figma Frame:</strong> ${frameName}</div>
+      <div>🌍 <strong>Website:</strong> ${targetUrl}</div>
+      <div>📅 <strong>Date:</strong> ${auditDate}</div>
+    </div>
+    <div style="display:flex;gap:16px;margin-top:24px;">
+      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;min-width:80px;">
+        <div style="font-size:26px;font-weight:800;">${matchResults.score.toFixed(0)}%</div>
+        <div style="font-size:11px;opacity:0.8;">Match Score</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;min-width:80px;">
+        <div style="font-size:26px;font-weight:800;">${failedIssues.length}</div>
+        <div style="font-size:11px;opacity:0.8;">Issues Found</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;min-width:80px;">
+        <div style="font-size:26px;font-weight:800;">${passCount}</div>
+        <div style="font-size:11px;opacity:0.8;">Passed</div>
+      </div>
+    </div>
+  </div>
+  <div style="padding:32px 48px;">
+    <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">📸 Screenshot with Issue Markers</h2>
+    <img src="data:image/png;base64,${screenshotBase64}" style="width:100%;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,0.1);border:1px solid #e2e8f0;" />
+  </div>
+  <div style="padding:0 48px 48px;">
+    <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">🔍 Issue Details</h2>
+    ${failedIssues.length > 0 ? issueRows : '<div style="padding:24px;background:#f0fdf4;border-radius:12px;color:#16a34a;font-weight:600;text-align:center;">✅ No design issues found! Perfect match.</div>'}
+  </div>
+</body></html>`;
+
+    console.log('🖨️ Rendering HTML report...');
+    const reportPage = await browser.newPage();
+    await reportPage.setViewportSize({ width: 1200, height: 800 });
+    await reportPage.setContent(reportHtml, { waitUntil: 'load' });
+    await reportPage.waitForTimeout(500);
+    await reportPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
+    await reportPage.close();
+    console.log('📸 HTML report saved as visual-audit-diff.png');
+
+    fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(report, null, 2));
+    console.log(`✅ Audit completed. ${passCount} passed, ${failedIssues.length} issues, ${notFoundCount} not found — across ${figmaTokens.length} tokens.`);
   } catch (error) {
     console.error('❌ Audit failed:', error);
     fs.writeFileSync('playwright-report/error-log.txt', `Crash Report:\n${error.stack}`);
