@@ -615,10 +615,9 @@ async function runAudit() {
     // 1. Draw markers on the live page via page.evaluate
     await page.evaluate((issues) => {
         issues.forEach(issue => {
-            const colorMap = { 'MAJOR_VISUAL': '#FF3B30', 'LAYOUT_SHIFT': '#FF9500', 'MINOR_DIFF': '#FFCC00' };
-            const bgMap = { 'MAJOR_VISUAL': 'rgba(255,59,48,0.05)', 'LAYOUT_SHIFT': 'rgba(255,149,0,0.05)', 'MINOR_DIFF': 'rgba(255,204,0,0.05)' };
-            const color = colorMap[issue.type] || '#FF3B30';
-            const bgColor = bgMap[issue.type] || 'rgba(255,59,48,0.05)';
+            // Single clean blue for all issue types
+            const color = '#3B82F6';
+            const bgColor = 'rgba(59,130,246,0.04)';
             
             // Add 6px padding to bounding box
             const bx = Math.max(0, issue.rect.x - 6);
@@ -649,6 +648,21 @@ async function runAudit() {
               box-shadow: 0 1px 4px rgba(0,0,0,0.3);
             `;
             document.body.appendChild(badge);
+
+            // Element name label below the badge
+            const label = document.createElement('div');
+            label.textContent = issue.element;
+            label.style.cssText = `
+              position: absolute; z-index: 10001; pointer-events: none;
+              top: ${by + 4}px; left: ${bx + 30}px;
+              height: 22px; padding: 0 8px;
+              background: ${color}; color: white; border-radius: 4px;
+              font-family: -apple-system, sans-serif; font-size: 10px; font-weight: 600;
+              display: flex; align-items: center;
+              box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+              max-width: ${Math.max(bw - 40, 80)}px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+            `;
+            document.body.appendChild(label);
         });
     }, allIssues);
 
@@ -659,10 +673,9 @@ async function runAudit() {
 
     // 3. Build Issue HTML List — structured Figma→Live diff format
     const issueRows = allIssues.map((issue) => {
-      const colorMap = { 'MAJOR_VISUAL': '#FF3B30', 'LAYOUT_SHIFT': '#FF9500', 'MINOR_DIFF': '#FFCC00' };
-      const labelMap = { 'MAJOR_VISUAL': 'Major Visual Mismatch', 'LAYOUT_SHIFT': 'Layout Shift', 'MINOR_DIFF': 'Minor Design Diff' };
-      const color = colorMap[issue.type] || '#FF3B30';
-      const label = labelMap[issue.type] || 'Visual Mismatch';
+      const labelMap = { 'MAJOR_VISUAL': 'Visual Mismatch', 'LAYOUT_SHIFT': 'Layout Shift', 'MINOR_DIFF': 'Design Diff' };
+      const color = '#3B82F6';
+      const label = labelMap[issue.type] || 'Issue';
       // Format each detail as a separate row with arrow styling
       const detailRows = issue.details.map(d => 
         `<div style="padding:4px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#475569;">${d}</div>`
@@ -704,12 +717,7 @@ async function runAudit() {
     </div>
   </div>
   
-  <div style="padding:16px 48px;background:#e2e8f0;border-bottom:1px solid #cbd5e1;display:flex;gap:24px;font-size:13px;color:#334155;align-items:center;">
-    <strong>Legend:</strong>
-    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FFCC00;"></span> Minor Spacing/Typo Diff</span>
-    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FF9500;"></span> Layout Shift</span>
-    <span style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#FF3B30;"></span> Major Visual Mismatch</span>
-  </div>
+
 
   <div style="padding:32px 48px;">
     <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">📸 Audit Screenshot</h2>
