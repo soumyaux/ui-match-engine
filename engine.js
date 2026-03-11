@@ -61,11 +61,13 @@ async function runAudit() {
     // ══════════════════════════════════════════
     console.log(`🌸 Starting Visual Engine Audit for: ${targetUrl}`);
     browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
+    // Force 1x device scale to match Figma's 1:1 pixel mapping
+    const context = await browser.newContext({ deviceScaleFactor: 1 });
+    const page = await context.newPage();
 
     // Force viewport to match Figma frame width exactly to prevent responsive breaking
     await page.setViewportSize({ width: frameWidth, height: frameHeight });
-    console.log(`📐 Viewport set to ${frameWidth}×${frameHeight} (matching Figma frame)`);
+    console.log(`📐 Viewport set to ${frameWidth}×${frameHeight} @1x (matching Figma frame)`);
 
     try {
       console.log(`🌍 Navigating to ${targetUrl}...`);
@@ -82,12 +84,36 @@ async function runAudit() {
       process.exit(1);
     }
 
-    // Wait, scroll down to load images, scroll up
-    console.log('⏳ Waiting for animations to settle...');
-    await page.addStyleTag({ content: '::-webkit-scrollbar { display: none !important; } * { scrollbar-width: none !important; }' });
+    // ── FULL ENVIRONMENT NORMALIZATION ──
+    console.log('⏳ Normalizing environment...');
     
-    // === NEW: BLACKOUT IMAGES LOGIC ===
-    // We hide images to focus on UI structure and avoid dynamic content "errors"
+    // 1. Wait for ALL web fonts to finish loading
+    await page.evaluate(() => document.fonts.ready);
+    console.log('🔤 Fonts loaded.');
+    
+    // 2. Freeze ALL animations, transitions, and hide dynamic overlays
+    await page.addStyleTag({ content: `
+      *, *::before, *::after {
+        animation-duration: 0s !important;
+        animation-delay: 0s !important;
+        transition-duration: 0s !important;
+        transition-delay: 0s !important;
+      }
+      ::-webkit-scrollbar { display: none !important; }
+      * { scrollbar-width: none !important; }
+      [class*="tooltip"], [class*="Tooltip"],
+      [class*="toast"], [class*="Toast"],
+      [class*="popup"], [class*="Popup"],
+      [class*="modal"]:not([class*="page"]),
+      [class*="Modal"]:not([class*="page"]),
+      [class*="dropdown"]:not(:focus-within),
+      [class*="Dropdown"]:not(:focus-within),
+      [role="tooltip"], [role="dialog"]:not([aria-modal="true"]) {
+        display: none !important;
+      }
+    `});
+
+    // 3. Blackout images to focus on UI structure
     await page.evaluate(() => {
       const styles = document.createElement('style');
       styles.innerHTML = `
@@ -100,16 +126,13 @@ async function runAudit() {
       document.head.appendChild(styles);
     });
 
-    // Wait for animations and lazy images (Optimized)
-    await page.waitForTimeout(2000); // User requested 2s timeout
-    await page.evaluate(() => {
-        window.scrollTo(0, document.body.scrollHeight);
-    });
-    // Wait briefly for lazy images to trigger
+    // 4. Scroll to trigger lazy loading, then scroll back
+    await page.waitForTimeout(1500);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await page.waitForTimeout(500);
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(1000);
-    console.log('✅ Page settled.');
+    console.log('✅ Environment normalized — fonts loaded, animations frozen, dynamic content hidden.');
 
     // === NEW: HUMAN-EYE PRE-CHECK ===
     console.log('👁️ Running Native Structural Pre-check...');
@@ -315,128 +338,134 @@ async function runAudit() {
         if (rect.width < 5 || rect.height < 5) return;
         const elName = getElementName(el);
         const errors = [];
-
-        // ── FONT SIZE ── (structured diff format)
-        if (design.fs && design.fs !== 'Mixed') {
-          const liveSize = parseFloat(live.fontSize);
-          const diff = Math.round(liveSize - design.fs);
-          if (Math.abs(diff) > 2) errors.push(`Font Size: Figma ${design.fs}px → Live ${liveSize}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
-        }
-        // ── FONT FAMILY ──
-        if (design.ff && design.ff !== 'Mixed' && live.fontFamily) {
-          const liveFF = live.fontFamily.split(',')[0].trim().replace(/["']/g, '');
-          if (!live.fontFamily.toLowerCase().includes(design.ff.toLowerCase())) {
-            errors.push(`Font Family: Figma "${design.ff}" → Live "${liveFF}"`);
-          }
-        }
-        // ── FONT WEIGHT ──
-        if (design.fw && design.fw !== 'Mixed') {
-          const weightMap = { 'Thin': '100', 'ExtraLight': '200', 'Light': '300', 'Regular': '400', 'Medium': '500', 'SemiBold': '600', 'Bold': '700', 'ExtraBold': '800', 'Black': '900' };
-          const expectedWeight = weightMap[design.fw] || design.fw;
-          if (live.fontWeight !== expectedWeight && live.fontWeight !== String(expectedWeight)) {
-            errors.push(`Font Weight: Figma ${expectedWeight} → Live ${live.fontWeight}`);
-          }
-        }
-        // ── TEXT COLOR ──
-        if (design.color) {
-          if (!colorsMatchBrowser(design.color, live.color)) {
-            errors.push(`Text Color: Figma ${design.color.toLowerCase()} → Live ${parseColorBrowser(live.color)}`);
-          }
-        }
-        // ── BACKGROUND COLOR ──
-        if (design.bg && design.bg.length > 0) {
-          const liveBg = parseColorBrowser(live.backgroundColor);
-          if (liveBg && liveBg !== 'transparent' && liveBg !== 'rgba(0, 0, 0, 0)' && !colorsMatchBrowser(design.bg[0], live.backgroundColor)) {
-            errors.push(`Background: Figma ${design.bg[0].toLowerCase()} → Live ${liveBg}`);
-          }
-        }
-        // ── BORDER RADIUS ──
-        if (design.br !== undefined && design.br !== 'Mixed' && design.br > 0) {
-          const liveRadius = parseFloat(live.borderRadius) || 0;
-          const diff = Math.round(liveRadius - design.br);
-          if (Math.abs(diff) > 2) errors.push(`Border Radius: Figma ${design.br}px → Live ${liveRadius}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
-        }
-        // ── LETTER SPACING ──
-        if (design.ls !== undefined && design.ls !== 'Mixed') {
-          const liveLs = live.letterSpacing === 'normal' ? 0 : parseFloat(live.letterSpacing) || 0;
-          const expectedLs = typeof design.ls === 'number' ? design.ls : 0;
-          if (Math.abs(liveLs - expectedLs) > 2) errors.push(`Letter Spacing: Figma ${expectedLs}px → Live ${liveLs}px`);
-        }
-        // ── LINE HEIGHT ──
-        if (design.lh !== undefined && design.lh !== 'Mixed') {
-          const liveLh = live.lineHeight === 'normal' ? 0 : parseFloat(live.lineHeight) || 0;
-          const expectedLh = typeof design.lh === 'number' ? design.lh : 0;
-          if (expectedLh > 0 && liveLh > 0 && Math.abs(liveLh - expectedLh) > 2) {
-            const diff = Math.round(liveLh - expectedLh);
-            errors.push(`Line Height: Figma ${expectedLh}px → Live ${liveLh}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
-          }
-        }
-        // ── TEXT ALIGN ──
-        if (design.ta && design.ta !== 'Mixed') {
-          const ta = design.ta.toLowerCase();
-          const expected = ta === 'justified' ? 'justify' : ta;
-          if (live.textAlign !== expected) errors.push(`Text Align: Figma ${expected} → Live ${live.textAlign}`);
-        }
-        // ── TEXT DECORATION ──
-        if (design.td && design.td !== 'Mixed') {
-          const expected = design.td === 'strikethrough' ? 'line-through' : design.td;
-          if (!live.textDecoration.includes(expected)) errors.push(`Text Decoration: Figma ${expected} → Live ${live.textDecoration.split(' ')[0]}`);
-        }
-        // ── TEXT TRANSFORM ──
-        if (design.tt && design.tt !== 'Mixed') {
-          if (live.textTransform !== design.tt) errors.push(`Text Transform: Figma ${design.tt} → Live ${live.textTransform}`);
-        }
-        // ── OPACITY ──
-        if (design.op !== undefined && design.op < 1) {
-          const liveOp = parseFloat(live.opacity);
-          if (Math.abs(liveOp - design.op) > 0.05) errors.push(`Opacity: Figma ${design.op} → Live ${liveOp}`);
-        }
-        // ── BORDER WIDTH ──
-        if (design.bw !== undefined && design.bw > 0) {
-          const liveBw = parseFloat(live.borderWidth) || 0;
-          if (Math.abs(liveBw - design.bw) > 2) errors.push(`Border Width: Figma ${design.bw}px → Live ${liveBw}px`);
-        }
-        // ── BORDER COLOR ──
-        if (design.bc) {
-          if (!colorsMatchBrowser(design.bc, live.borderColor)) {
-            errors.push(`Border Color: Figma ${design.bc.toLowerCase()} → Live ${parseColorBrowser(live.borderColor)}`);
-          }
-        }
-        // ── PADDING ──
-        if (design.pad && Array.isArray(design.pad)) {
-          const [pt, pr, pb, pl] = design.pad;
-          const sides = [
-            { name: 'Top', figma: pt, live: parseFloat(live.paddingTop) || 0 },
-            { name: 'Right', figma: pr, live: parseFloat(live.paddingRight) || 0 },
-            { name: 'Bottom', figma: pb, live: parseFloat(live.paddingBottom) || 0 },
-            { name: 'Left', figma: pl, live: parseFloat(live.paddingLeft) || 0 },
-          ];
-          sides.forEach(s => {
-            if (s.figma > 0) {
-              const diff = Math.round(s.live - s.figma);
-              if (Math.abs(diff) > 2) errors.push(`Padding ${s.name}: Figma ${s.figma}px → Live ${s.live}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
-            }
-          });
-        }
-        // ── GAP ──
-        if (design.gap !== undefined) {
-          const liveGap = live.gap === 'normal' ? 0 : parseFloat(live.gap) || 0;
-          const diff = Math.round(liveGap - design.gap);
-          if (Math.abs(diff) > 2) errors.push(`Gap: Figma ${design.gap}px → Live ${liveGap}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
-        }
-        // ── WIDTH / HEIGHT ──
-        // Only evaluate strict widths for tangible UI components (buttons, inputs, images, cards)
-        // Skip ALL structural/layout containers — they are fluid in CSS and generate false positives
-        const structuralTags = ['SECTION', 'MAIN', 'NAV', 'ASIDE', 'HEADER', 'FOOTER', 'ARTICLE', 'UL', 'OL', 'TABLE', 'TBODY', 'THEAD', 'FORM', 'FIELDSET'];
-        const isStructural = structuralTags.includes(tag) || tag === 'DIV' || tag === 'SPAN' || tag === 'LI';
+        const role = design.role || 'leaf'; // text | container | leaf
         
-        if (design.w !== undefined && design.w > 0 && !isStructural) {
-          const diff = Math.round(rect.width - design.w);
-          if (Math.abs(diff) > 2) errors.push(`Width: Figma ${design.w}px → Live ${Math.round(rect.width)}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+        // Determine if this DOM element is a tangible interactive component
+        const tangibleTags = ['BUTTON', 'A', 'INPUT', 'TEXTAREA', 'SELECT', 'IMG', 'LABEL'];
+        const isTangible = tangibleTags.includes(tag) || el.getAttribute('role') === 'button';
+
+        // ═══════════════════════════════════════
+        // TEXT PROPERTIES (only for text tokens)
+        // ═══════════════════════════════════════
+        if (role === 'text' || design.fs) {
+          if (design.fs && design.fs !== 'Mixed') {
+            const liveSize = parseFloat(live.fontSize);
+            const diff = Math.round(liveSize - design.fs);
+            if (Math.abs(diff) > 2) errors.push(`Font Size: Figma ${design.fs}px → Live ${liveSize}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+          }
+          if (design.ff && design.ff !== 'Mixed' && live.fontFamily) {
+            const liveFF = live.fontFamily.split(',')[0].trim().replace(/["']/g, '');
+            if (!live.fontFamily.toLowerCase().includes(design.ff.toLowerCase())) {
+              errors.push(`Font Family: Figma "${design.ff}" → Live "${liveFF}"`);
+            }
+          }
+          if (design.fw && design.fw !== 'Mixed') {
+            const weightMap = { 'Thin': '100', 'ExtraLight': '200', 'Light': '300', 'Regular': '400', 'Medium': '500', 'SemiBold': '600', 'Bold': '700', 'ExtraBold': '800', 'Black': '900' };
+            const expectedWeight = weightMap[design.fw] || design.fw;
+            if (live.fontWeight !== expectedWeight && live.fontWeight !== String(expectedWeight)) {
+              errors.push(`Font Weight: Figma ${expectedWeight} → Live ${live.fontWeight}`);
+            }
+          }
+          if (design.color) {
+            if (!colorsMatchBrowser(design.color, live.color)) {
+              errors.push(`Text Color: Figma ${design.color.toLowerCase()} → Live ${parseColorBrowser(live.color)}`);
+            }
+          }
+          if (design.ls !== undefined && design.ls !== 'Mixed') {
+            const liveLs = live.letterSpacing === 'normal' ? 0 : parseFloat(live.letterSpacing) || 0;
+            const expectedLs = typeof design.ls === 'number' ? design.ls : 0;
+            if (Math.abs(liveLs - expectedLs) > 2) errors.push(`Letter Spacing: Figma ${expectedLs}px → Live ${liveLs}px`);
+          }
+          if (design.lh !== undefined && design.lh !== 'Mixed') {
+            const liveLh = live.lineHeight === 'normal' ? 0 : parseFloat(live.lineHeight) || 0;
+            const expectedLh = typeof design.lh === 'number' ? design.lh : 0;
+            if (expectedLh > 0 && liveLh > 0 && Math.abs(liveLh - expectedLh) > 2) {
+              const diff = Math.round(liveLh - expectedLh);
+              errors.push(`Line Height: Figma ${expectedLh}px → Live ${liveLh}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+            }
+          }
+          if (design.ta && design.ta !== 'Mixed') {
+            const ta = design.ta.toLowerCase();
+            const expected = ta === 'justified' ? 'justify' : ta;
+            if (live.textAlign !== expected) errors.push(`Text Align: Figma ${expected} → Live ${live.textAlign}`);
+          }
+          if (design.td && design.td !== 'Mixed') {
+            const expected = design.td === 'strikethrough' ? 'line-through' : design.td;
+            if (!live.textDecoration.includes(expected)) errors.push(`Text Decoration: Figma ${expected} → Live ${live.textDecoration.split(' ')[0]}`);
+          }
+          if (design.tt && design.tt !== 'Mixed') {
+            if (live.textTransform !== design.tt) errors.push(`Text Transform: Figma ${design.tt} → Live ${live.textTransform}`);
+          }
         }
-        if (design.h !== undefined && design.h > 0 && !isStructural) {
-          const diff = Math.round(rect.height - design.h);
-          if (Math.abs(diff) > 2) errors.push(`Height: Figma ${design.h}px → Live ${Math.round(rect.height)}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+
+        // ═══════════════════════════════════════
+        // VISUAL PROPERTIES (containers + leaves)
+        // ═══════════════════════════════════════
+        if (role !== 'text') {
+          if (design.bg && design.bg.length > 0) {
+            const liveBg = parseColorBrowser(live.backgroundColor);
+            if (liveBg && liveBg !== 'transparent' && liveBg !== 'rgba(0, 0, 0, 0)' && !colorsMatchBrowser(design.bg[0], live.backgroundColor)) {
+              errors.push(`Background: Figma ${design.bg[0].toLowerCase()} → Live ${liveBg}`);
+            }
+          }
+          if (design.br !== undefined && design.br !== 'Mixed' && design.br > 0) {
+            const liveRadius = parseFloat(live.borderRadius) || 0;
+            const diff = Math.round(liveRadius - design.br);
+            if (Math.abs(diff) > 2) errors.push(`Border Radius: Figma ${design.br}px → Live ${liveRadius}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+          }
+          if (design.op !== undefined && design.op < 1) {
+            const liveOp = parseFloat(live.opacity);
+            if (Math.abs(liveOp - design.op) > 0.05) errors.push(`Opacity: Figma ${design.op} → Live ${liveOp}`);
+          }
+          if (design.bw !== undefined && design.bw > 0) {
+            const liveBw = parseFloat(live.borderWidth) || 0;
+            if (Math.abs(liveBw - design.bw) > 2) errors.push(`Border Width: Figma ${design.bw}px → Live ${liveBw}px`);
+          }
+          if (design.bc) {
+            if (!colorsMatchBrowser(design.bc, live.borderColor)) {
+              errors.push(`Border Color: Figma ${design.bc.toLowerCase()} → Live ${parseColorBrowser(live.borderColor)}`);
+            }
+          }
+        }
+
+        // ═══════════════════════════════════════
+        // SPACING PROPERTIES (containers only)
+        // ═══════════════════════════════════════
+        if (role === 'container' || design.pad || design.gap !== undefined) {
+          if (design.pad && Array.isArray(design.pad)) {
+            const [pt, pr, pb, pl] = design.pad;
+            const sides = [
+              { name: 'Top', figma: pt, live: parseFloat(live.paddingTop) || 0 },
+              { name: 'Right', figma: pr, live: parseFloat(live.paddingRight) || 0 },
+              { name: 'Bottom', figma: pb, live: parseFloat(live.paddingBottom) || 0 },
+              { name: 'Left', figma: pl, live: parseFloat(live.paddingLeft) || 0 },
+            ];
+            sides.forEach(s => {
+              if (s.figma > 0) {
+                const diff = Math.round(s.live - s.figma);
+                if (Math.abs(diff) > 2) errors.push(`Padding ${s.name}: Figma ${s.figma}px → Live ${s.live}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+              }
+            });
+          }
+          if (design.gap !== undefined) {
+            const liveGap = live.gap === 'normal' ? 0 : parseFloat(live.gap) || 0;
+            const diff = Math.round(liveGap - design.gap);
+            if (Math.abs(diff) > 2) errors.push(`Gap: Figma ${design.gap}px → Live ${liveGap}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+          }
+        }
+
+        // ═══════════════════════════════════════
+        // DIMENSION PROPERTIES (tangible leaves ONLY)
+        // ═══════════════════════════════════════
+        if (role === 'leaf' && isTangible) {
+          if (design.w !== undefined && design.w > 0) {
+            const diff = Math.round(rect.width - design.w);
+            if (Math.abs(diff) > 2) errors.push(`Width: Figma ${design.w}px → Live ${Math.round(rect.width)}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+          }
+          if (design.h !== undefined && design.h > 0) {
+            const diff = Math.round(rect.height - design.h);
+            if (Math.abs(diff) > 2) errors.push(`Height: Figma ${design.h}px → Live ${Math.round(rect.height)}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+          }
         }
 
         if (errors.length > 0) {
