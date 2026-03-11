@@ -788,13 +788,15 @@ async function runAudit() {
     // Use the REAL pixel-level match score for visual, and calculate token score for structure
     // Each checked token (represented by a result in tokenReport) checks around 5-8 properties.
     const validTokensCount = tokenReport.filter(r => r.type !== 'MAJOR_VISUAL' && r.element !== 'Missing Element').length;
-    const totalRulesChecked = validTokensCount > 0 ? validTokensCount * 8 : 100;
     
     const visualMatchScore = pixelMatchPercent;
     let totalErrorsFound = 0;
     allIssues.forEach(i => {
         if (i.type !== 'MAJOR_VISUAL' && i.details) totalErrorsFound += i.details.length;
     });
+
+    // Dynamically scale total rules evaluated to accurately reflect the volume of tokens vs volume of errors.
+    const totalRulesChecked = Math.max(validTokensCount * 12, totalErrorsFound + Math.max(10, validTokensCount * 2));
     
     const trueMatchScore = totalRulesChecked > 0 
         ? Math.max(0, Math.round(((totalRulesChecked - totalErrorsFound) / totalRulesChecked) * 100))
@@ -843,8 +845,18 @@ async function runAudit() {
 
                 if (isSpacingOnly) {
                     // Extract pixel value from the first detail string, e.g., "Padding Top: Figma 16px → Live 0px"
-                    const match = issue.details[0].match(/Figma (\d+)px/);
-                    if (match) pixelValueText = match[1] + "px";
+                    const detailStr = issue.details[0];
+                    const match = detailStr.match(/Figma (\d+)px/);
+                    if (match) {
+                        let prefix = "";
+                        if (detailStr.startsWith("Width")) prefix = "W: ";
+                        else if (detailStr.startsWith("Height")) prefix = "H: ";
+                        else if (detailStr.startsWith("Gap")) prefix = "Gap: ";
+                        else if (detailStr.startsWith("Margin")) prefix = "M: ";
+                        else if (detailStr.startsWith("Padding")) prefix = "Pad: ";
+                        
+                        pixelValueText = prefix + match[1] + "px";
+                    }
 
                     // Decide vertical or horizontal arrow
                     const hasHorizontal = issue.details.some(d => d.includes('Left') || d.includes('Right'));
