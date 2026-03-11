@@ -120,11 +120,48 @@ async function runAudit() {
     console.log('👁️ Running Human-Eye Structural Pre-check...');
     const preCheckScreenshot = await page.screenshot({ fullPage: false }); // Just the first fold
     // We simulate a fast visual check using a high-threshold pixelmatch
-    // If the figma image exists, we compare a small 400px thumbnail
+    // If the figma image exists, we compare a small thumbnail
     if (fs.existsSync(process.env.FIGMA_IMAGE || 'figma-frame.png')) {
-       // (Detailed pixelmatch scoring happens in Phase 2, but we use it here to fail fast)
+      const { PNG } = require('pngjs');
+      const pixelmatchModule = require('pixelmatch');
+      try {
+        const liveBuf = await page.screenshot({ clip: { x: 0, y: 0, width: 800, height: 600 } });
+        const livePng = PNG.sync.read(liveBuf);
+        const figmaBuf = fs.readFileSync(process.env.FIGMA_IMAGE || 'figma-frame.png');
+        const figmaPng = PNG.sync.read(figmaBuf);
+        
+        // Ensure dimensions match for a fast thumbnail check
+        const checkW = Math.min(800, figmaPng.width, livePng.width);
+        const checkH = Math.min(600, figmaPng.height, livePng.height);
+        
+        if (checkW > 0 && checkH > 0) {
+            const diffPixels = pixelmatchModule(figmaPng.data, livePng.data, null, checkW, checkH, { threshold: 0.3 });
+            const maxPx = checkW * checkH;
+            const matchScore = 100 - ((diffPixels / maxPx) * 100);
+            
+            console.log(`👁️ Pre-check Match Score: ${matchScore.toFixed(2)}%`);
+            if (matchScore < 40) {
+                console.error(`🚨 STRUCTURAL MISMATCH (Score: ${matchScore.toFixed(1)}%). The Live URL layout is drastically different from the Figma design.`);
+                console.error(`Please check if you provided the correct URL or if the page requires login.`);
+                fs.writeFileSync('playwright-report/error-log.txt', `Audit Aborted: Structural Mismatch (Score: ${matchScore.toFixed(1)}%). Live URL is drastically different from Figma design.`);
+                // Render a failure PDF
+                const html = `<html><body style="font-family:sans-serif;padding:60px;text-align:center;background:#fff5f5;color:#c53030;">
+                    <h1 style="font-size:40px;margin-bottom:10px;">🚨 Mismatch Detected</h1>
+                    <p style="font-size:18px;">The Figma design and the Live URL are structurally too different (${matchScore.toFixed(1)}% match). Please check the URL.</p>
+                </body></html>`;
+                const errPage = await browser.newPage();
+                await errPage.setContent(html);
+                await errPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', printBackground: true });
+                await errPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
+                await errPage.close();
+                throw new Error(`Audit Aborted: structural match is too low (<40%).`);
+            }
+        }
+      } catch (e) {
+         if (e.message.includes("Abort")) throw e; // bubble up intended aborts
+         console.warn("⚠️ Pre-check skipped or failed: ", e.message);
+      }
     }
-
 
     // ══════════════════════════════════════════
     // PHASE 1: TOKEN CSS VALIDATION
@@ -715,8 +752,9 @@ async function runAudit() {
     const tokenPassCount = tokenReport.filter(r => r.type === 'TOKEN_PASS').length;
 
     // === NEW: DYNAMIC MULTI-SCREENSHOT LOGIC ===
-    const maxScreenshots = Math.min(3, Math.ceil(allIssues.length / 6));
-    console.log(`📸 Generating ${maxScreenshots} dynamic report screenshots...`);
+    const maxScreenshots = Math.min(3, Math.ceil(allIssues.length / 8)); // 8 issues per screen avg to keep it clean
+    const issuesPerScreen = Math.ceil(allIssues.length / Math.max(1, maxScreenshots));
+    console.log(`📸 Generating ${maxScreenshots} dynamic report screenshots (approx ${issuesPerScreen} issues per screen)...`);
     
     const screenshotPaths = [];
     for (let i = 0; i < maxScreenshots; i++) {
@@ -725,10 +763,11 @@ async function runAudit() {
           document.querySelectorAll('.audit-marker-box, .audit-marker-badge').forEach(el => el.remove());
         });
 
-        // Filter issues for this logical chunk
-        const chunkStart = i * 6;
-        const chunkEnd = chunkStart + 6;
+        // Filter issues for this logical chunk so ALL issues are drawn across the screenshots
+        const chunkStart = i * issuesPerScreen;
+        const chunkEnd = i === maxScreenshots - 1 ? allIssues.length : chunkStart + issuesPerScreen;
         const issueChunk = allIssues.slice(chunkStart, chunkEnd);
+
 
         await page.evaluate((issues) => {
             issues.forEach(issue => {
@@ -786,24 +825,28 @@ async function runAudit() {
     const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="margin:0;font-family:sans-serif;background:#f1f5f9;">
   <div style="background:linear-gradient(135deg,#0f5ec4 0%,#3da5ff 100%);padding:40px 48px;color:#fff;">
-    <div style="font-size:28px;font-weight:800;margin-bottom:20px;">UI Match</div>
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;">
+      <div style="font-size:28px;font-weight:800;letter-spacing:-0.5px;">UI Match</div>
+      <div style="font-size:13px;opacity:0.7;border-left:2px solid rgba(255,255,255,0.3);padding-left:16px;">Visual Audit Report</div>
+    </div>
     <div style="display:flex;gap:32px;font-size:13px;opacity:0.9;">
-      <div>🎨 <strong>Figma:</strong> ${frameName}</div>
-      <div>🌍 <strong>URL:</strong> ${targetUrl}</div>
+      <div>🎨 <strong>Figma Frame:</strong> ${frameName}</div>
+      <div>🌍 <strong>Website:</strong> ${targetUrl}</div>
       <div>📅 <strong>Date:</strong> ${auditDate}</div>
     </div>
     <div style="display:flex;gap:16px;margin-top:24px;">
       <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
         <div style="font-size:28px;font-weight:800;">${matchScore}%</div>
-        <div style="font-size:11px;">Match Score</div>
+        <div style="font-size:11px;">True Match Score</div>
       </div>
       <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
         <div style="font-size:28px;font-weight:800;">${allIssues.length}</div>
-        <div style="font-size:11px;">Issues</div>
+        <div style="font-size:11px;">Issues Found</div>
       </div>
     </div>
   </div>
   ${screenshotHtmlChunks}
+
   <div style="padding:0 48px 48px;">
     <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">🔍 Issue Log</h2>
     ${issueRows || '<p>✅ Perfect Match!</p>'}
