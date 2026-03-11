@@ -774,8 +774,11 @@ async function runAudit() {
     
     let allIssues = [...tokenMinor, ...tokenLayout, ...filteredVisual];
     
-    // Sort issues top-to-bottom (by Y position) so header = #1, footer = last
-    allIssues.sort((a, b) => a.rect.y - b.rect.y);
+    // Sort issues top-to-bottom (by Y position), and left-to-right (by X position) for natural reading order
+    allIssues.sort((a, b) => {
+        if (Math.abs(a.rect.y - b.rect.y) > 10) return a.rect.y - b.rect.y;
+        return a.rect.x - b.rect.x;
+    });
     
     // Assign issue numbers sequentially (now in top-to-bottom order)
     allIssues.forEach((issue, index) => {
@@ -808,6 +811,9 @@ async function runAudit() {
             // A palette of vibrant, distinct colors
             const palette = ['#3B82F6', '#EC4899', '#F97316', '#10B981', '#8B5CF6', '#EF4444', '#14B8A6'];
             
+            // Track badge positions to prevent overlaps
+            const placedBadges = [];
+
             issues.forEach(issue => {
                 const color = palette[(issue.issueNum - 1) % palette.length];
                 const bx = Math.max(0, issue.rect.x - 6);
@@ -825,11 +831,49 @@ async function runAudit() {
                 box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:3px solid ${color};background:rgba(${r},${g},${b},0.15);`;
                 document.body.appendChild(box);
 
+                // --- SMART BADGE POSITIONING ---
+                let badgeX = bx - 14;
+                let badgeY = by - 14;
+                
+                // Edge safety (prevent clipping off top/left edges of screen)
+                badgeX = Math.max(10, badgeX);
+                badgeY = Math.max(10, badgeY);
+
+                // Collision Detection: shift right if overlapping another badge
+                const badgeWidth = 28;
+                const badgeHeight = 28;
+                const MARGIN = 4;
+                let hasCollision = true;
+                
+                while (hasCollision) {
+                    hasCollision = false;
+                    for (const placed of placedBadges) {
+                        if (
+                            badgeX < placed.x + badgeWidth + MARGIN &&
+                            badgeX + badgeWidth + MARGIN > placed.x &&
+                            badgeY < placed.y + badgeHeight + MARGIN &&
+                            badgeY + badgeHeight + MARGIN > placed.y
+                        ) {
+                            // Collision detected! Shift it rightwards by the full badge width + margin
+                            badgeX = placed.x + badgeWidth + MARGIN;
+                            hasCollision = true;
+                            // Check screen boundary constraint (don't push infinitely right)
+                            if (badgeX > window.innerWidth - 40) {
+                                badgeX = bx - 14; // reset X
+                                badgeY += badgeHeight + MARGIN; // push down instead
+                            }
+                            break;
+                        }
+                    }
+                }
+                
+                placedBadges.push({ x: badgeX, y: badgeY });
+
                 const badge = document.createElement('div');
                 badge.className = 'audit-marker-badge';
                 badge.textContent = String(issue.issueNum);
-                // Bigger badge (28px), top-left anchor, strong shadow
-                badge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${by - 14}px;left:${bx - 14}px;min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
+                // Bigger badge (28px), active positioning, strong shadow
+                badge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
                 document.body.appendChild(badge);
             });
         }, issueChunk);
