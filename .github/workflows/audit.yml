@@ -130,12 +130,17 @@ jobs:
           SESSION_ID="${{ github.event.inputs.session_id }}"
           FINAL_ID="${SESSION_ID:-manual_run}"
           PNG_URL="${{ secrets.SUPABASE_URL }}/storage/v1/object/public/audit-results/${FINAL_ID}.zip"
+
+          # Extract scores from the engine output, default to 0 if missing
+          TRUE_SCORE=$(jq -r '.trueMatchScore // 0' playwright-report/audit-results.json 2>/dev/null || echo 0)
+          VISUAL_SCORE=$(jq -r '.visualMatchScore // 0' playwright-report/audit-results.json 2>/dev/null || echo 0)
+
           curl -X PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.$SCAN_ID" \
             -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
-            -d "{\"audit_status\": \"completed\", \"audit_png_url\": \"$PNG_URL\"}"
+            -d "{\"audit_status\": \"completed\", \"audit_png_url\": \"$PNG_URL\", \"match_percent\": $TRUE_SCORE, \"true_match_percent\": $TRUE_SCORE, \"visual_match_percent\": $VISUAL_SCORE}"
 
       - name: ❌ Update Scan Status to Failed
         if: ${{ failure() && github.event.inputs.scan_id != '' }}
@@ -144,7 +149,7 @@ jobs:
           SESSION_ID="${{ github.event.inputs.session_id }}"
           FINAL_ID="${SESSION_ID:-manual_run}"
           PNG_URL="${{ secrets.SUPABASE_URL }}/storage/v1/object/public/audit-results/${FINAL_ID}.zip"
-          
+
           # Read error message from engine report if available
           ERROR_MSG="Audit failed unexpectedly."
           if [ -f "playwright-report/error-log.txt" ]; then
