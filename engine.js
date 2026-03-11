@@ -195,7 +195,7 @@ async function runAudit() {
             await errPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
             await errPage.close();
             
-            throw new Error(`Audit Aborted: structural match is too low (<40%).`);
+            throw new Error(`Audit Aborted: Structural Mismatch (Score: ${matchScore.toFixed(1)}%). Live URL is drastically different from Figma design.`);
         }
       } catch (e) {
          if (e.message.includes("Abort")) throw e;
