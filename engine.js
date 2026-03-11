@@ -982,8 +982,8 @@ async function runAudit() {
     const screenshotHtmlChunks = screenshotPaths.map((base64, idx) => `
       <div style="padding:32px 48px;">
         <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">📸 Audit View ${idx + 1} of ${maxScreenshots}</h2>
-        <div style="padding:12px;background:#fff;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,0.1);border:1px solid #e2e8f0;">
-          <img src="data:image/png;base64,${base64}" style="width:100%;display:block;border-radius:8px;" />
+        <div style="padding:12px;background:#fff;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,0.1);border:1px solid #e2e8f0;text-align:center;">
+          <img src="data:image/png;base64,${base64}" style="max-width:750px;width:100%;height:auto;display:inline-block;border-radius:8px;" />
         </div>
       </div>
     `).join('');
@@ -1017,14 +1017,8 @@ async function runAudit() {
     }).join('');
 
     // 4. Build Final Output HTML
-    const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
-    <style>
-      body { margin: 0; font-family: sans-serif; background: #f1f5f9; width: 1440px; }
-      .container { width: 1440px; margin: 0 auto; background: #fff; min-height: 100vh; overflow: hidden; box-shadow: 0 0 20px rgba(0,0,0,0.05); }
-    </style>
-    </head>
+    const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="margin:0;font-family:sans-serif;background:#f1f5f9;">
-<div class="container">
   <div style="background:linear-gradient(135deg,#0f5ec4 0%,#3da5ff 100%);padding:40px 48px;color:#fff;">
     <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;">
       <div style="font-size:28px;font-weight:800;letter-spacing:-0.5px;">UI Match</div>
@@ -1061,15 +1055,12 @@ async function runAudit() {
     <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">🔍 Issue Log</h2>
     ${issueRows || '<p>✅ Perfect Match!</p>'}
   </div>
-</div>
 </body></html>`;
 
     // 5. Render final PDF report
     const reportPage = await browser.newPage();
-    // Force the playwright viewport context to explicitly match the 1440px scaling container so that fullPage screenshots trigger correctly
-    await reportPage.setViewportSize({ width: 1440, height: 900 });
     await reportPage.setContent(reportHtml, { waitUntil: 'load' });
-    await reportPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', width: '1440px', printBackground: true });
+    await reportPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', format: 'A4', printBackground: true });
     await reportPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
 
     await reportPage.close();
