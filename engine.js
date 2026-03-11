@@ -128,7 +128,7 @@ async function runAudit() {
         const figmaBase64 = figmaBuf.toString('base64');
         
         // Use native browser canvas to compare the top portion of the screen
-        const matchScore = await page.evaluate(async (fBase, lBase) => {
+        const matchScore = await page.evaluate(async ({fBase, lBase}) => {
             return new Promise((resolve, reject) => {
                 const imgF = new Image();
                 const imgL = new Image();
@@ -175,7 +175,7 @@ async function runAudit() {
                     resolve(score);
                 }
             });
-        }, figmaBase64, liveBase64);
+        }, { fBase: figmaBase64, lBase: liveBase64 });
         
         console.log(`👁️ Native Pre-check Score: ${matchScore.toFixed(2)}%`);
 
@@ -879,10 +879,15 @@ async function runAudit() {
       <div style="font-size:28px;font-weight:800;letter-spacing:-0.5px;">UI Match</div>
       <div style="font-size:13px;opacity:0.7;border-left:2px solid rgba(255,255,255,0.3);padding-left:16px;">Visual Audit Report</div>
     </div>
-    <div style="display:flex;gap:32px;font-size:13px;opacity:0.9;">
+    <div style="display:flex;flex-direction:column;gap:10px;font-size:14px;opacity:0.9;">
       <div>🎨 <strong>Figma Frame:</strong> ${frameName}</div>
-      <div>🌍 <strong>Website:</strong> ${targetUrl}</div>
-      <div>📅 <strong>Date:</strong> ${auditDate}</div>
+      
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div style="flex:1;word-break:break-all;padding-right:24px;">🌍 <strong>Website:</strong> ${targetUrl}</div>
+        <div style="white-space:nowrap;">📅 <strong>Date:</strong> ${auditDate}</div>
+      </div>
+
+      <div>📐 <strong>Viewport:</strong> 1440&times;900px</div>
     </div>
     <div style="display:flex;gap:16px;margin-top:24px;">
       <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
