@@ -84,7 +84,7 @@ jobs:
           FRAME_NAME: ${{ github.event.inputs.frame_name }}
 
       - name: 📸 Upload Visual Audit Report to Supabase
-        if: success()
+        if: always()
         env:
           SESSION_ID: ${{ github.event.inputs.session_id }}
           SCAN_ID: ${{ github.event.inputs.scan_id }}
@@ -122,6 +122,10 @@ jobs:
         if: ${{ failure() && github.event.inputs.scan_id != '' }}
         run: |
           SCAN_ID="${{ github.event.inputs.scan_id }}"
+          SESSION_ID="${{ github.event.inputs.session_id }}"
+          FINAL_ID="${SESSION_ID:-manual_run}"
+          PNG_URL="${{ secrets.SUPABASE_URL }}/storage/v1/object/public/audit-results/${FINAL_ID}.zip"
+          
           # Read error message from engine report if available
           ERROR_MSG="Audit failed unexpectedly."
           if [ -f "playwright-report/error-log.txt" ]; then
@@ -134,4 +138,4 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
-            -d "{\"audit_status\": \"failed\", \"error_message\": $ERROR_JSON}"
+            -d "{\"audit_status\": \"failed\", \"error_message\": $ERROR_JSON, \"audit_png_url\": \"$PNG_URL\"}"
