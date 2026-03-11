@@ -786,11 +786,22 @@ async function runAudit() {
     });
 
     // Use the REAL pixel-level match score for visual, and calculate token score for structure
+    let totalTrackableTokens = 100;
+    try {
+        if (process.env.TOKENS_FILE && require('fs').existsSync(process.env.TOKENS_FILE)) {
+            const rawTokens = JSON.parse(require('fs').readFileSync(process.env.TOKENS_FILE, 'utf8'));
+            totalTrackableTokens = rawTokens.length * 5; // approx 5 tracked properties per Figma node
+        }
+    } catch(e) {}
+
     const visualMatchScore = pixelMatchPercent;
-    const tokenPassCount = tokenReport.filter(r => r.type === 'TOKEN_PASS').length;
-    const totalTrackableTokens = tokenReport.length;
+    let totalErrorsFound = 0;
+    allIssues.forEach(i => {
+        if (i.type !== 'MAJOR_VISUAL') totalErrorsFound += i.details.length;
+    });
+    
     const trueMatchScore = totalTrackableTokens > 0 
-        ? Math.round((tokenPassCount / totalTrackableTokens) * 100) 
+        ? Math.max(0, Math.round(((totalTrackableTokens - totalErrorsFound) / totalTrackableTokens) * 100))
         : 100;
 
     // === NEW: DYNAMIC MULTI-SCREENSHOT LOGIC ===
@@ -825,7 +836,7 @@ async function runAudit() {
                 const bw = issue.rect.w + 12;
                 const bh = issue.rect.h + 12;
 
-                const isSpacingOnly = issue.details && issue.details.length > 0 && issue.details.every(d => d.startsWith('Padding') || d.startsWith('Gap') || d.startsWith('Margin'));
+                const isSpacingOnly = issue.details && issue.details.length > 0 && issue.details.some(d => d.startsWith('Padding') || d.startsWith('Gap') || d.startsWith('Margin') || d.startsWith('Width') || d.startsWith('Height'));
                 
                 let badgeX = bx - 14;
                 let badgeY = by - 14;
@@ -962,13 +973,24 @@ async function runAudit() {
     const palette = ['#3B82F6', '#EC4899', '#F97316', '#10B981', '#8B5CF6', '#EF4444', '#14B8A6'];
     const issueRows = allIssues.map((issue) => {
       const color = palette[(issue.issueNum - 1) % palette.length];
-      const detailRows = issue.details.map(d => `<div style="padding:4px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#475569;">${d}</div>`).join('');
+      const detailRows = issue.details.map(d => {
+        const parts = d.split(':');
+        if (parts.length >= 2) {
+          const key = parts[0].trim();
+          const val = parts.slice(1).join(':').trim();
+          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#475569;">
+            <span style="font-weight:600;min-width:110px;color:#0f1b35;">${key}</span>
+            <span style="text-align:right;background:#f8fafc;padding:4px 8px;border-radius:6px;border:1px solid #e2e8f0;font-family:monospace;letter-spacing:-0.2px;">${val}</span>
+          </div>`;
+        }
+        return `<div style="padding:4px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#475569;">${d}</div>`;
+      }).join('');
       return `
       <div style="display:flex;gap:14px;padding:16px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,0.06);border-left:4px solid ${color};">
         <div style="min-width:32px;height:32px;background:${color};color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">${issue.issueNum}</div>
         <div style="flex:1;">
           <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:6px;">${issue.element}</div>
-          <div style="background:#f8fafc;padding:8px 12px;border-radius:8px;">${detailRows}</div>
+          <div style="border-radius:8px;">${detailRows}</div>
         </div>
       </div>`;
     }).join('');
