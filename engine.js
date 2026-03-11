@@ -100,20 +100,15 @@ async function runAudit() {
       document.head.appendChild(styles);
     });
 
-    await page.waitForTimeout(3000);
+    // Wait for animations and lazy images (Optimized)
+    await page.waitForTimeout(2000); // User requested 2s timeout
     await page.evaluate(() => {
-      return new Promise((resolve) => {
-        const distance = 300; const delay = 100;
-        const timer = setInterval(() => {
-          window.scrollBy(0, distance);
-          if (window.scrollY + window.innerHeight >= document.body.scrollHeight) {
-            clearInterval(timer); resolve();
-          }
-        }, delay);
-      });
+        window.scrollTo(0, document.body.scrollHeight);
     });
+    // Wait briefly for lazy images to trigger
+    await page.waitForTimeout(500);
     await page.evaluate(() => window.scrollTo(0, 0));
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(1000);
     console.log('✅ Page settled.');
 
     // === NEW: HUMAN-EYE PRE-CHECK ===
