@@ -117,49 +117,89 @@ async function runAudit() {
     console.log('✅ Page settled.');
 
     // === NEW: HUMAN-EYE PRE-CHECK ===
-    console.log('👁️ Running Human-Eye Structural Pre-check...');
-    const preCheckScreenshot = await page.screenshot({ fullPage: false }); // Just the first fold
-    // We simulate a fast visual check using a high-threshold pixelmatch
-    // If the figma image exists, we compare a small thumbnail
-    if (fs.existsSync(process.env.FIGMA_IMAGE || 'figma-frame.png')) {
-      const { PNG } = require('pngjs');
-      const pixelmatchModule = require('pixelmatch');
+    console.log('👁️ Running Native Structural Pre-check...');
+    const figmaFile = process.env.FIGMA_IMAGE || 'figma-frame.png';
+    
+    if (fs.existsSync(figmaFile)) {
       try {
-        const liveBuf = await page.screenshot({ clip: { x: 0, y: 0, width: 800, height: 600 } });
-        const livePng = PNG.sync.read(liveBuf);
-        const figmaBuf = fs.readFileSync(process.env.FIGMA_IMAGE || 'figma-frame.png');
-        const figmaPng = PNG.sync.read(figmaBuf);
+        const liveFullBuf = await page.screenshot({ fullPage: true });
+        const liveBase64 = liveFullBuf.toString('base64');
+        const figmaBuf = fs.readFileSync(figmaFile);
+        const figmaBase64 = figmaBuf.toString('base64');
         
-        // Ensure dimensions match for a fast thumbnail check
-        const checkW = Math.min(800, figmaPng.width, livePng.width);
-        const checkH = Math.min(600, figmaPng.height, livePng.height);
+        // Use native browser canvas to compare the top portion of the screen
+        const matchScore = await page.evaluate(async (fBase, lBase) => {
+            return new Promise((resolve, reject) => {
+                const imgF = new Image();
+                const imgL = new Image();
+                imgF.src = 'data:image/png;base64,' + fBase;
+                imgL.src = 'data:image/png;base64,' + lBase;
+                
+                let loaded = 0;
+                imgF.onload = () => { loaded++; if (loaded===2) compare(); };
+                imgL.onload = () => { loaded++; if (loaded===2) compare(); };
+                imgF.onerror = () => reject('Figma img load failed');
+                imgL.onerror = () => reject('Live img load failed');
+
+                function compare() {
+                    const w = Math.min(800, imgF.width, imgL.width);
+                    const h = Math.min(600, imgF.height, imgL.height);
+                    if (w <= 0 || h <= 0) return resolve(100);
+
+                    const canvasF = document.createElement('canvas');
+                    const canvasL = document.createElement('canvas');
+                    canvasF.width = w; canvasF.height = h;
+                    canvasL.width = w; canvasL.height = h;
+
+                    const ctxF = canvasF.getContext('2d', { willReadFrequently: true });
+                    const ctxL = canvasL.getContext('2d', { willReadFrequently: true });
+                    ctxF.drawImage(imgF, 0, 0, w, h);
+                    ctxL.drawImage(imgL, 0, 0, w, h);
+
+                    const dataF = ctxF.getImageData(0, 0, w, h).data;
+                    const dataL = ctxL.getImageData(0, 0, w, h).data;
+                    
+                    let diffPixels = 0;
+                    const maxLen = w * h * 4;
+                    for (let i = 0; i < maxLen; i += 4) {
+                        const rDiff = Math.abs(dataF[i] - dataL[i]);
+                        const gDiff = Math.abs(dataF[i+1] - dataL[i+1]);
+                        const bDiff = Math.abs(dataF[i+2] - dataL[i+2]);
+                        // Simple threshold for structural match: if pixel is drastically different
+                        if (rDiff + gDiff + bDiff > 100) {
+                            diffPixels++;
+                        }
+                    }
+                    const totalPixels = w * h;
+                    const score = 100 - ((diffPixels / totalPixels) * 100);
+                    resolve(score);
+                }
+            });
+        }, figmaBase64, liveBase64);
         
-        if (checkW > 0 && checkH > 0) {
-            const diffPixels = pixelmatchModule(figmaPng.data, livePng.data, null, checkW, checkH, { threshold: 0.3 });
-            const maxPx = checkW * checkH;
-            const matchScore = 100 - ((diffPixels / maxPx) * 100);
+        console.log(`👁️ Native Pre-check Score: ${matchScore.toFixed(2)}%`);
+
+        if (matchScore < 40) {
+            console.error(`🚨 STRUCTURAL MISMATCH (Score: ${matchScore.toFixed(1)}%). The Live URL layout is drastically different from the Figma design.`);
+            console.error(`Please check if you provided the correct URL or if the page requires login.`);
+            fs.writeFileSync('playwright-report/error-log.txt', `Audit Aborted: Structural Mismatch (Score: ${matchScore.toFixed(1)}%). Live URL is drastically different from Figma design.`);
             
-            console.log(`👁️ Pre-check Match Score: ${matchScore.toFixed(2)}%`);
-            if (matchScore < 40) {
-                console.error(`🚨 STRUCTURAL MISMATCH (Score: ${matchScore.toFixed(1)}%). The Live URL layout is drastically different from the Figma design.`);
-                console.error(`Please check if you provided the correct URL or if the page requires login.`);
-                fs.writeFileSync('playwright-report/error-log.txt', `Audit Aborted: Structural Mismatch (Score: ${matchScore.toFixed(1)}%). Live URL is drastically different from Figma design.`);
-                // Render a failure PDF
-                const html = `<html><body style="font-family:sans-serif;padding:60px;text-align:center;background:#fff5f5;color:#c53030;">
-                    <h1 style="font-size:40px;margin-bottom:10px;">🚨 Mismatch Detected</h1>
-                    <p style="font-size:18px;">The Figma design and the Live URL are structurally too different (${matchScore.toFixed(1)}% match). Please check the URL.</p>
-                </body></html>`;
-                const errPage = await browser.newPage();
-                await errPage.setContent(html);
-                await errPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', printBackground: true });
-                await errPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
-                await errPage.close();
-                throw new Error(`Audit Aborted: structural match is too low (<40%).`);
-            }
+            // Render a failure PDF
+            const html = `<html><body style="font-family:sans-serif;padding:60px;text-align:center;background:#fff5f5;color:#c53030;">
+                <h1 style="font-size:40px;margin-bottom:10px;">🚨 Mismatch Detected</h1>
+                <p style="font-size:18px;">The Figma design and the Live URL are structurally too different (${matchScore.toFixed(1)}% match). Please check the URL.</p>
+            </body></html>`;
+            const errPage = await browser.newPage();
+            await errPage.setContent(html);
+            await errPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', printBackground: true });
+            await errPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
+            await errPage.close();
+            
+            throw new Error(`Audit Aborted: structural match is too low (<40%).`);
         }
       } catch (e) {
-         if (e.message.includes("Abort")) throw e; // bubble up intended aborts
-         console.warn("⚠️ Pre-check skipped or failed: ", e.message);
+         if (e.message.includes("Abort")) throw e;
+         console.warn("⚠️ Native Pre-check skipped/failed: ", e.message);
       }
     }
 
@@ -770,8 +810,11 @@ async function runAudit() {
 
 
         await page.evaluate((issues) => {
+            // A palette of vibrant, distinct colors
+            const palette = ['#3B82F6', '#EC4899', '#F97316', '#10B981', '#8B5CF6', '#EF4444', '#14B8A6'];
+            
             issues.forEach(issue => {
-                const color = '#3B82F6';
+                const color = palette[(issue.issueNum - 1) % palette.length];
                 const bx = Math.max(0, issue.rect.x - 6);
                 const by = Math.max(0, issue.rect.y - 6);
                 const bw = issue.rect.w + 12;
@@ -779,13 +822,19 @@ async function runAudit() {
 
                 const box = document.createElement('div');
                 box.className = 'audit-marker-box';
-                box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:2px solid ${color};background:rgba(59,130,246,0.04);`;
+                // Use a semi-transparent fill using the specific color hex
+                // We convert hex to rgb via a tiny helper to apply opacity
+                const r = parseInt(color.slice(1, 3), 16);
+                const g = parseInt(color.slice(3, 5), 16);
+                const b = parseInt(color.slice(5, 7), 16);
+                box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:3px solid ${color};background:rgba(${r},${g},${b},0.15);`;
                 document.body.appendChild(box);
 
                 const badge = document.createElement('div');
                 badge.className = 'audit-marker-badge';
                 badge.textContent = String(issue.issueNum);
-                badge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${by+4}px;left:${bx+4}px;min-width:22px;height:22px;padding:0 5px;background:${color};color:white;border-radius:11px;font-family:sans-serif;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.3);`;
+                // Bigger badge (28px), top-left anchor, strong shadow
+                badge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${by - 14}px;left:${bx - 14}px;min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
                 document.body.appendChild(badge);
             });
         }, issueChunk);
@@ -808,8 +857,9 @@ async function runAudit() {
     const auditDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
     // 3. Build Issue HTML List
+    const palette = ['#3B82F6', '#EC4899', '#F97316', '#10B981', '#8B5CF6', '#EF4444', '#14B8A6'];
     const issueRows = allIssues.map((issue) => {
-      const color = '#3B82F6';
+      const color = palette[(issue.issueNum - 1) % palette.length];
       const detailRows = issue.details.map(d => `<div style="padding:4px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#475569;">${d}</div>`).join('');
       return `
       <div style="display:flex;gap:14px;padding:16px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,0.06);border-left:4px solid ${color};">
