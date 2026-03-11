@@ -785,9 +785,13 @@ async function runAudit() {
         issue.issueNum = index + 1;
     });
 
-    // Use the REAL pixel-level match score
-    const matchScore = pixelMatchPercent;
+    // Use the REAL pixel-level match score for visual, and calculate token score for structure
+    const visualMatchScore = pixelMatchPercent;
     const tokenPassCount = tokenReport.filter(r => r.type === 'TOKEN_PASS').length;
+    const totalTrackableTokens = tokenReport.length;
+    const trueMatchScore = totalTrackableTokens > 0 
+        ? Math.round((tokenPassCount / totalTrackableTokens) * 100) 
+        : 100;
 
     // === NEW: DYNAMIC MULTI-SCREENSHOT LOGIC ===
     const maxScreenshots = Math.min(3, Math.ceil(allIssues.length / 8)); // 8 issues per screen avg to keep it clean
@@ -821,20 +825,75 @@ async function runAudit() {
                 const bw = issue.rect.w + 12;
                 const bh = issue.rect.h + 12;
 
-                const box = document.createElement('div');
-                box.className = 'audit-marker-box';
-                // Use a semi-transparent fill using the specific color hex
-                // We convert hex to rgb via a tiny helper to apply opacity
-                const r = parseInt(color.slice(1, 3), 16);
-                const g = parseInt(color.slice(3, 5), 16);
-                const b = parseInt(color.slice(5, 7), 16);
-                box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:3px solid ${color};background:rgba(${r},${g},${b},0.15);`;
-                document.body.appendChild(box);
-
-                // --- SMART BADGE POSITIONING ---
+                const isSpacingOnly = issue.details && issue.details.length > 0 && issue.details.every(d => d.startsWith('Padding') || d.startsWith('Gap') || d.startsWith('Margin'));
+                
                 let badgeX = bx - 14;
                 let badgeY = by - 14;
-                
+                let badgeText = String(issue.issueNum);
+
+                if (isSpacingOnly) {
+                    // Extract pixel value from the first detail string, e.g., "Padding Top: Figma 16px → Live 0px"
+                    const match = issue.details[0].match(/Figma (\d+)px/);
+                    if (match) badgeText = match[1];
+
+                    // Decide vertical or horizontal arrow
+                    const hasHorizontal = issue.details.some(d => d.includes('Left') || d.includes('Right'));
+                    const hasVertical = issue.details.some(d => d.includes('Top') || d.includes('Bottom'));
+                    const isHorizontal = hasHorizontal && !hasVertical ? true : (!hasHorizontal && !hasVertical && bw > bh ? true : false);
+                    
+                    const svgNS = "http://www.w3.org/2000/svg";
+                    const svg = document.createElementNS(svgNS, "svg");
+                    
+                    if (isHorizontal) {
+                        svg.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by + bh/2 - 10}px;left:${bx}px;width:${bw}px;height:20px;overflow:visible;`;
+                        
+                        const line = document.createElementNS(svgNS, "line");
+                        line.setAttribute("x1", "0"); line.setAttribute("y1", "10");
+                        line.setAttribute("x2", String(bw)); line.setAttribute("y2", "10");
+                        line.setAttribute("stroke", color); line.setAttribute("stroke-width", "2");
+                        
+                        const leftArrow = document.createElementNS(svgNS, "polygon");
+                        leftArrow.setAttribute("points", "0,10 6,6 6,14");
+                        leftArrow.setAttribute("fill", color);
+                        
+                        const rightArrow = document.createElementNS(svgNS, "polygon");
+                        rightArrow.setAttribute("points", `${bw},10 ${bw-6},6 ${bw-6},14`);
+                        rightArrow.setAttribute("fill", color);
+                        
+                        svg.appendChild(line); svg.appendChild(leftArrow); svg.appendChild(rightArrow);
+                    } else { // vertical
+                        svg.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx + bw/2 - 10}px;width:20px;height:${bh}px;overflow:visible;`;
+                        
+                        const line = document.createElementNS(svgNS, "line");
+                        line.setAttribute("x1", "10"); line.setAttribute("y1", "0");
+                        line.setAttribute("x2", "10"); line.setAttribute("y2", String(bh));
+                        line.setAttribute("stroke", color); line.setAttribute("stroke-width", "2");
+                        
+                        const topArrow = document.createElementNS(svgNS, "polygon");
+                        topArrow.setAttribute("points", "10,0 6,6 14,6");
+                        topArrow.setAttribute("fill", color);
+                        
+                        const bottomArrow = document.createElementNS(svgNS, "polygon");
+                        bottomArrow.setAttribute("points", `10,${bh} 6,${bh-6} 14,${bh-6}`);
+                        bottomArrow.setAttribute("fill", color);
+                        
+                        svg.appendChild(line); svg.appendChild(topArrow); svg.appendChild(bottomArrow);
+                    }
+                    document.body.appendChild(svg);
+                    
+                    // Center the badge on the element for spacing arrows
+                    badgeX = bx + bw / 2 - 14;
+                    badgeY = by + bh / 2 - 14;
+                } else {
+                    const box = document.createElement('div');
+                    box.className = 'audit-marker-box';
+                    const r = parseInt(color.slice(1, 3), 16);
+                    const g = parseInt(color.slice(3, 5), 16);
+                    const b = parseInt(color.slice(5, 7), 16);
+                    box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:3px solid ${color};background:rgba(${r},${g},${b},0.15);`;
+                    document.body.appendChild(box);
+                }
+
                 // Edge safety (prevent clipping off top/left edges of screen)
                 badgeX = Math.max(10, badgeX);
                 badgeY = Math.max(10, badgeY);
@@ -854,13 +913,12 @@ async function runAudit() {
                             badgeY < placed.y + badgeHeight + MARGIN &&
                             badgeY + badgeHeight + MARGIN > placed.y
                         ) {
-                            // Collision detected! Shift it rightwards by the full badge width + margin
+                            // Collision detected! Shift it rightwards
                             badgeX = placed.x + badgeWidth + MARGIN;
                             hasCollision = true;
-                            // Check screen boundary constraint (don't push infinitely right)
                             if (badgeX > window.innerWidth - 40) {
-                                badgeX = bx - 14; // reset X
-                                badgeY += badgeHeight + MARGIN; // push down instead
+                                badgeX = bx - 14; 
+                                badgeY += badgeHeight + MARGIN; 
                             }
                             break;
                         }
@@ -871,8 +929,13 @@ async function runAudit() {
 
                 const badge = document.createElement('div');
                 badge.className = 'audit-marker-badge';
-                badge.textContent = String(issue.issueNum);
-                // Bigger badge (28px), active positioning, strong shadow
+                badge.textContent = badgeText;
+                
+                // If it's a spacing badge, optionally make it slightly differently styled? 
+                // The user just said "assign a number", so standard badge is fine. But wait, if they have multiple padding issues? 
+                // The badge has the value, e.g. "16". We can make it slightly smaller rectangular maybe?
+                // Let's stick with the standard circular 28px badge for consistency perfectly centered.
+                
                 badge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
                 document.body.appendChild(badge);
             });
@@ -930,8 +993,12 @@ async function runAudit() {
     </div>
     <div style="display:flex;gap:16px;margin-top:24px;">
       <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
-        <div style="font-size:28px;font-weight:800;">${matchScore}%</div>
+        <div style="font-size:28px;font-weight:800;">${trueMatchScore}%</div>
         <div style="font-size:11px;">True Match Score</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
+        <div style="font-size:28px;font-weight:800;">${visualMatchScore}%</div>
+        <div style="font-size:11px;">Visual Match Score</div>
       </div>
       <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
         <div style="font-size:28px;font-weight:800;">${allIssues.length}</div>
@@ -954,10 +1021,16 @@ async function runAudit() {
     await reportPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
 
     await reportPage.close();
-    console.log('� Visual report saved as visual-audit-diff.pdf + .png');
+    console.log('📸 Visual report saved as visual-audit-diff.pdf + .png');
 
-    fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(tokenReport, null, 2));
-    console.log(`✅ Audit completed. Score: ${matchScore}%. ${allIssues.length} total issues found.`);
+    const finalResults = {
+      trueMatchScore,
+      visualMatchScore,
+      totalIssues: allIssues.length,
+      tokens: tokenReport
+    };
+    fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(finalResults, null, 2));
+    console.log(`✅ Audit completed. True: ${trueMatchScore}%, Visual: ${visualMatchScore}%. ${allIssues.length} total issues found.`);
 
   } catch (error) {
     console.error('❌ Audit failed:', error);
