@@ -425,15 +425,16 @@ async function runAudit() {
           if (Math.abs(diff) > 2) errors.push(`Gap: Figma ${design.gap}px → Live ${liveGap}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
         }
         // ── WIDTH / HEIGHT ──
-        // Only evaluate strict widths for inline or tangible components (buttons, inputs, images)
-        // Structural containers (DIV, SECTION, MAIN) are naturally fluid in CSS and commonly cause false flags.
-        const isStructural = tag === 'SECTION' || tag === 'MAIN' || (tag === 'DIV' && rect.width > 300);
+        // Only evaluate strict widths for tangible UI components (buttons, inputs, images, cards)
+        // Skip ALL structural/layout containers — they are fluid in CSS and generate false positives
+        const structuralTags = ['SECTION', 'MAIN', 'NAV', 'ASIDE', 'HEADER', 'FOOTER', 'ARTICLE', 'UL', 'OL', 'TABLE', 'TBODY', 'THEAD', 'FORM', 'FIELDSET'];
+        const isStructural = structuralTags.includes(tag) || tag === 'DIV' || tag === 'SPAN' || tag === 'LI';
         
         if (design.w !== undefined && design.w > 0 && !isStructural) {
           const diff = Math.round(rect.width - design.w);
           if (Math.abs(diff) > 2) errors.push(`Width: Figma ${design.w}px → Live ${Math.round(rect.width)}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
         }
-        if (design.h !== undefined && design.h > 0) {
+        if (design.h !== undefined && design.h > 0 && !isStructural) {
           const diff = Math.round(rect.height - design.h);
           if (Math.abs(diff) > 2) errors.push(`Height: Figma ${design.h}px → Live ${Math.round(rect.height)}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
         }
@@ -852,17 +853,23 @@ async function runAudit() {
                     const detailStr = issue.details.find(d => d.startsWith('Padding') || d.startsWith('Gap') || d.startsWith('Margin') || d.startsWith('Width') || d.startsWith('Height'));
                     
                     if (detailStr) {
-                        // Supports decimals and negative values
-                        const match = detailStr.match(/Figma ([-.\d]+)px/);
-                        if (match) {
-                            let prefix = "";
-                            if (detailStr.startsWith("Width")) prefix = "W: ";
-                            else if (detailStr.startsWith("Height")) prefix = "H: ";
-                            else if (detailStr.startsWith("Gap")) prefix = "Gap: ";
-                            else if (detailStr.startsWith("Margin")) prefix = "M: ";
-                            else if (detailStr.startsWith("Padding")) prefix = "Pad: ";
-                            
-                            pixelValueText = prefix + match[1] + "px";
+                        // Extract the DELTA (difference) value — this is the actual mismatch amount
+                        const deltaMatch = detailStr.match(/Δ\s*([+-]?\d+)px/);
+                        const figmaMatch = detailStr.match(/Figma ([-.\d]+)px/);
+                        const liveMatch = detailStr.match(/Live ([-.\d]+)px/);
+                        
+                        let prefix = "";
+                        if (detailStr.startsWith("Width")) prefix = "W: ";
+                        else if (detailStr.startsWith("Height")) prefix = "H: ";
+                        else if (detailStr.startsWith("Gap")) prefix = "Gap: ";
+                        else if (detailStr.startsWith("Margin")) prefix = "M: ";
+                        else if (detailStr.startsWith("Padding")) prefix = "Pad: ";
+                        
+                        // Show: "Figma→Live" e.g. "Pad: 16→0"
+                        if (figmaMatch && liveMatch) {
+                            pixelValueText = prefix + figmaMatch[1] + "→" + liveMatch[1] + "px";
+                        } else if (figmaMatch) {
+                            pixelValueText = prefix + figmaMatch[1] + "px";
                         }
                     }
 
