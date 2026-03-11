@@ -786,8 +786,9 @@ async function runAudit() {
     });
 
     // Use the REAL pixel-level match score for visual, and calculate token score for structure
-    // We estimate about 8 core CSS properties checked per scanned element
-    const totalRulesChecked = tokenReport.length > 0 ? tokenReport.length * 8 : 100;
+    // Each checked token (represented by a result in tokenReport) checks around 5-8 properties.
+    const validTokensCount = tokenReport.filter(r => r.type !== 'MAJOR_VISUAL' && r.element !== 'Missing Element').length;
+    const totalRulesChecked = validTokensCount > 0 ? validTokensCount * 8 : 100;
     
     const visualMatchScore = pixelMatchPercent;
     let totalErrorsFound = 0;
@@ -838,12 +839,12 @@ async function runAudit() {
                 let badgeX = bx - 14;
                 let badgeY = by - 14;
                 let badgeText = String(issue.issueNum);
-                let badgeRadius = isSpacingOnly ? '4px' : '14px'; // Square for exact spacing numbers, circle for counts
+                let pixelValueText = null;
 
                 if (isSpacingOnly) {
                     // Extract pixel value from the first detail string, e.g., "Padding Top: Figma 16px → Live 0px"
                     const match = issue.details[0].match(/Figma (\d+)px/);
-                    if (match) badgeText = match[1];
+                    if (match) pixelValueText = match[1] + "px";
 
                     // Decide vertical or horizontal arrow
                     const hasHorizontal = issue.details.some(d => d.includes('Left') || d.includes('Right'));
@@ -937,13 +938,26 @@ async function runAudit() {
                 
                 placedBadges.push({ x: badgeX, y: badgeY });
 
-                const badge = document.createElement('div');
-                badge.className = 'audit-marker-badge';
-                badge.textContent = badgeText;
-                
                 // Render the unified, highly distinct badge
-                badge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;min-width:28px;height:28px;padding:0 6px;background:${appliedColor};color:white;border-radius:${badgeRadius};font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
-                document.body.appendChild(badge);
+                const badgeContainer = document.createElement('div');
+                badgeContainer.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;display:flex;align-items:center;gap:4px;`;
+                
+                // 1. Issue Number Badge (Circle, matching layout color)
+                const numBadge = document.createElement('div');
+                numBadge.className = 'audit-marker-badge';
+                numBadge.textContent = badgeText;
+                numBadge.style.cssText = `min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
+                badgeContainer.appendChild(numBadge);
+
+                // 2. Secondary Pixel Value Badge (Square, Orange)
+                if (pixelValueText) {
+                    const valBadge = document.createElement('div');
+                    valBadge.textContent = pixelValueText;
+                    valBadge.style.cssText = `height:28px;padding:0 8px;background:${spacingColor};color:white;border-radius:4px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
+                    badgeContainer.appendChild(valBadge);
+                }
+
+                document.body.appendChild(badgeContainer);
             });
         }, issueChunk);
 
