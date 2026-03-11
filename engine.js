@@ -362,12 +362,11 @@ async function runAudit() {
           if (design.fs && design.fs !== 'Mixed') {
             const liveSize = parseFloat(live.fontSize);
             const diff = Math.round(liveSize - design.fs);
-            if (Math.abs(diff) > 2) errors.push(`Font Size: Figma ${design.fs}px → Live ${liveSize}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+            if (Math.abs(diff) > 2) errors.push('Font Size');
           }
           if (design.ff && design.ff !== 'Mixed' && live.fontFamily) {
-            const liveFF = live.fontFamily.split(',')[0].trim().replace(/["']/g, '');
             if (!live.fontFamily.toLowerCase().includes(design.ff.toLowerCase())) {
-              errors.push(`Font Family: Figma "${design.ff}" → Live "${liveFF}"`);
+              errors.push('Font Family');
             }
           }
           if (design.fw && design.fw !== 'Mixed') {
@@ -384,38 +383,37 @@ async function runAudit() {
             };
             const expectedWeight = weightMap[design.fw] || design.fw;
             if (live.fontWeight !== expectedWeight && live.fontWeight !== String(expectedWeight)) {
-              errors.push(`Font Weight: Figma ${expectedWeight} → Live ${live.fontWeight}`);
+              errors.push('Font Weight');
             }
           }
           if (design.color) {
             if (!colorsMatchBrowser(design.color, live.color)) {
-              errors.push(`Text Color: Figma ${design.color.toLowerCase()} → Live ${parseColorBrowser(live.color)}`);
+              errors.push('Text Color');
             }
           }
           if (design.ls !== undefined && design.ls !== 'Mixed') {
             const liveLs = live.letterSpacing === 'normal' ? 0 : parseFloat(live.letterSpacing) || 0;
             const expectedLs = typeof design.ls === 'number' ? design.ls : 0;
-            if (Math.abs(liveLs - expectedLs) > 2) errors.push(`Letter Spacing: Figma ${expectedLs}px → Live ${liveLs}px`);
+            if (Math.abs(liveLs - expectedLs) > 2) errors.push('Letter Spacing');
           }
           if (design.lh !== undefined && design.lh !== 'Mixed') {
             const liveLh = live.lineHeight === 'normal' ? 0 : parseFloat(live.lineHeight) || 0;
             const expectedLh = typeof design.lh === 'number' ? design.lh : 0;
             if (expectedLh > 0 && liveLh > 0 && Math.abs(liveLh - expectedLh) > 2) {
-              const diff = Math.round(liveLh - expectedLh);
-              errors.push(`Line Height: Figma ${expectedLh}px → Live ${liveLh}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+              errors.push('Line Height');
             }
           }
           if (design.ta && design.ta !== 'Mixed') {
             const ta = design.ta.toLowerCase();
             const expected = ta === 'justified' ? 'justify' : ta;
-            if (live.textAlign !== expected) errors.push(`Text Align: Figma ${expected} → Live ${live.textAlign}`);
+            if (live.textAlign !== expected) errors.push('Text Align');
           }
           if (design.td && design.td !== 'Mixed') {
             const expected = design.td === 'strikethrough' ? 'line-through' : design.td;
-            if (!live.textDecoration.includes(expected)) errors.push(`Text Decoration: Figma ${expected} → Live ${live.textDecoration.split(' ')[0]}`);
+            if (!live.textDecoration.includes(expected)) errors.push('Text Decoration');
           }
           if (design.tt && design.tt !== 'Mixed') {
-            if (live.textTransform !== design.tt) errors.push(`Text Transform: Figma ${design.tt} → Live ${live.textTransform}`);
+            if (live.textTransform !== design.tt) errors.push('Text Transform');
           }
         }
 
@@ -426,25 +424,25 @@ async function runAudit() {
           if (design.bg && design.bg.length > 0) {
             const liveBg = parseColorBrowser(live.backgroundColor);
             if (liveBg && liveBg !== 'transparent' && liveBg !== 'rgba(0, 0, 0, 0)' && !colorsMatchBrowser(design.bg[0], live.backgroundColor)) {
-              errors.push(`Background: Figma ${design.bg[0].toLowerCase()} → Live ${liveBg}`);
+              errors.push('Background Color');
             }
           }
           if (design.br !== undefined && design.br !== 'Mixed' && design.br > 0) {
             const liveRadius = parseFloat(live.borderRadius) || 0;
             const diff = Math.round(liveRadius - design.br);
-            if (Math.abs(diff) > 2) errors.push(`Border Radius: Figma ${design.br}px → Live ${liveRadius}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+            if (Math.abs(diff) > 2) errors.push('Border Radius');
           }
           if (design.op !== undefined && design.op < 1) {
             const liveOp = parseFloat(live.opacity);
-            if (Math.abs(liveOp - design.op) > 0.05) errors.push(`Opacity: Figma ${design.op} → Live ${liveOp}`);
+            if (Math.abs(liveOp - design.op) > 0.05) errors.push('Opacity');
           }
           if (design.bw !== undefined && design.bw > 0) {
             const liveBw = parseFloat(live.borderWidth) || 0;
-            if (Math.abs(liveBw - design.bw) > 2) errors.push(`Border Width: Figma ${design.bw}px → Live ${liveBw}px`);
+            if (Math.abs(liveBw - design.bw) > 2) errors.push('Border Width');
           }
           if (design.bc) {
             if (!colorsMatchBrowser(design.bc, live.borderColor)) {
-              errors.push(`Border Color: Figma ${design.bc.toLowerCase()} → Live ${parseColorBrowser(live.borderColor)}`);
+              errors.push('Border Color');
             }
           }
         }
@@ -464,14 +462,14 @@ async function runAudit() {
             sides.forEach(s => {
               if (s.figma > 0) {
                 const diff = Math.round(s.live - s.figma);
-                if (Math.abs(diff) > 2) errors.push(`Padding ${s.name}: Figma ${s.figma}px → Live ${s.live}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+                if (Math.abs(diff) > 2) errors.push('Padding ' + s.name);
               }
             });
           }
           if (design.gap !== undefined) {
             const liveGap = live.gap === 'normal' ? 0 : parseFloat(live.gap) || 0;
             const diff = Math.round(liveGap - design.gap);
-            if (Math.abs(diff) > 2) errors.push(`Gap: Figma ${design.gap}px → Live ${liveGap}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+            if (Math.abs(diff) > 2) errors.push('Gap');
           }
         }
 
@@ -481,32 +479,15 @@ async function runAudit() {
         if (role === 'leaf' && isTangible) {
           if (design.w !== undefined && design.w > 0) {
             const diffW = Math.round(rect.width - design.w);
-            if (Math.abs(diffW) > 2) errors.push(`Width: Figma ${design.w}px → Live ${Math.round(rect.width)}px (Δ ${diffW > 0 ? '+' : ''}${diffW}px)`);
+            if (Math.abs(diffW) > 2) errors.push('Width');
           }
           if (design.h !== undefined && design.h > 0) {
             const diffH = Math.round(rect.height - design.h);
-            if (Math.abs(diffH) > 2) errors.push(`Height: Figma ${design.h}px → Live ${Math.round(rect.height)}px (Δ ${diffH > 0 ? '+' : ''}${diffH}px)`);
+            if (Math.abs(diffH) > 2) errors.push('Height');
           }
         }
 
-        // ═══════════════════════════════════════
-        // SAFETY NET: Drop errors where values actually match
-        // ═══════════════════════════════════════
-        // This catches edge-cases where the comparison logic fires but the 
-        // displayed Figma and Live values are visually identical.
-        const filteredErrors = errors.filter(e => {
-          // Check if "Figma X" and "Live X" contain the same value
-          const figmaVal = e.match(/Figma\s+([^→]+?)\s*→/);
-          const liveVal = e.match(/→\s*Live\s+(.+?)(?:\s*\(|$)/);
-          if (figmaVal && liveVal) {
-            const f = figmaVal[1].trim().toLowerCase();
-            const l = liveVal[1].trim().toLowerCase();
-            if (f === l) return false; // Drop this error — values are the same!
-          }
-          return true;
-        });
-
-        if (filteredErrors.length > 0) {
+        if (errors.length > 0) {
           // === DEDUP: check if this DOM element was already reported ===
           // Use a unique key based on element tag + position to detect same element
           const elKey = `${tag}_${Math.round(rect.left)}_${Math.round(rect.top)}_${Math.round(rect.width)}`;
@@ -516,15 +497,15 @@ async function runAudit() {
             const existing = results[existingIdx];
             if (existing) {
               // Add new errors that aren't already listed
-              filteredErrors.forEach(e => {
+              errors.forEach(e => {
                 if (!existing.details.includes(e)) existing.details.push(e);
               });
             }
             return; // Don't create a new issue
           }
 
-          const layoutErrors = filteredErrors.filter(e => e.startsWith('Width:') || e.startsWith('Height:'));
-          const styleErrors = filteredErrors.filter(e => !e.startsWith('Width:') && !e.startsWith('Height:'));
+          const layoutErrors = errors.filter(e => e === 'Width' || e === 'Height');
+          const styleErrors = errors.filter(e => e !== 'Width' && e !== 'Height');
           
           tokenFailures++;
           
@@ -874,29 +855,23 @@ async function runAudit() {
         ? Math.max(0, Math.round(((totalRulesChecked - totalErrorsFound) / totalRulesChecked) * 100))
         : 100;
 
-    // === NEW: DYNAMIC MULTI-SCREENSHOT LOGIC ===
-    const maxScreenshots = Math.min(3, Math.ceil(allIssues.length / 8)); // 8 issues per screen avg to keep it clean
+    // === DYNAMIC MULTI-SCREENSHOT LOGIC ===
+    const maxScreenshots = Math.min(3, Math.ceil(allIssues.length / 8));
     const issuesPerScreen = Math.ceil(allIssues.length / Math.max(1, maxScreenshots));
-    console.log(`📸 Generating ${maxScreenshots} dynamic report screenshots (approx ${issuesPerScreen} issues per screen)...`);
+    console.log(`📸 Generating ${maxScreenshots} screenshot(s)...`);
     
     const screenshotPaths = [];
     for (let i = 0; i < maxScreenshots; i++) {
-        // Clear previous markers
         await page.evaluate(() => {
           document.querySelectorAll('.audit-marker-box, .audit-marker-badge').forEach(el => el.remove());
         });
 
-        // Filter issues for this logical chunk so ALL issues are drawn across the screenshots
         const chunkStart = i * issuesPerScreen;
         const chunkEnd = i === maxScreenshots - 1 ? allIssues.length : chunkStart + issuesPerScreen;
         const issueChunk = allIssues.slice(chunkStart, chunkEnd);
 
-
         await page.evaluate((issues) => {
-            // A palette of vibrant, distinct colors
             const palette = ['#3B82F6', '#EC4899', '#F97316', '#10B981', '#8B5CF6', '#EF4444', '#14B8A6'];
-            
-            // Track badge positions to prevent overlaps
             const placedBadges = [];
 
             issues.forEach(issue => {
@@ -906,109 +881,27 @@ async function runAudit() {
                 const bw = issue.rect.w + 12;
                 const bh = issue.rect.h + 12;
 
-                const isSpacingOnly = issue.details && issue.details.length > 0 && issue.details.some(d => d.startsWith('Padding') || d.startsWith('Gap') || d.startsWith('Margin') || d.startsWith('Width') || d.startsWith('Height'));
-                const spacingColor = '#ea580c'; // Figma Orange
-                const appliedColor = isSpacingOnly ? spacingColor : color;
-                
+                // Draw a clean colored bounding box around the flagged component
+                const box = document.createElement('div');
+                box.className = 'audit-marker-box';
+                const r = parseInt(color.slice(1, 3), 16);
+                const g = parseInt(color.slice(3, 5), 16);
+                const b = parseInt(color.slice(5, 7), 16);
+                box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:3px solid ${color};background:rgba(${r},${g},${b},0.12);border-radius:4px;`;
+                document.body.appendChild(box);
+
                 let badgeX = bx - 14;
                 let badgeY = by - 14;
-                let badgeText = String(issue.issueNum);
-                let pixelValueText = null;
 
-                if (isSpacingOnly) {
-                    // Extract pixel value from the correct detail string, skipping Font/Color errors
-                    const detailStr = issue.details.find(d => d.startsWith('Padding') || d.startsWith('Gap') || d.startsWith('Margin') || d.startsWith('Width') || d.startsWith('Height'));
-                    
-                    if (detailStr) {
-                        // Extract the DELTA (difference) value — this is the actual mismatch amount
-                        const deltaMatch = detailStr.match(/Δ\s*([+-]?\d+)px/);
-                        const figmaMatch = detailStr.match(/Figma ([-.\d]+)px/);
-                        const liveMatch = detailStr.match(/Live ([-.\d]+)px/);
-                        
-                        let prefix = "";
-                        if (detailStr.startsWith("Width")) prefix = "W: ";
-                        else if (detailStr.startsWith("Height")) prefix = "H: ";
-                        else if (detailStr.startsWith("Gap")) prefix = "Gap: ";
-                        else if (detailStr.startsWith("Margin")) prefix = "M: ";
-                        else if (detailStr.startsWith("Padding")) prefix = "Pad: ";
-                        
-                        // Show: "Figma→Live" e.g. "Pad: 16→0"
-                        if (figmaMatch && liveMatch) {
-                            pixelValueText = prefix + figmaMatch[1] + "→" + liveMatch[1] + "px";
-                        } else if (figmaMatch) {
-                            pixelValueText = prefix + figmaMatch[1] + "px";
-                        }
-                    }
-
-                    // Decide vertical or horizontal arrow
-                    const hasHorizontal = issue.details.some(d => d.includes('Left') || d.includes('Right'));
-                    const hasVertical = issue.details.some(d => d.includes('Top') || d.includes('Bottom'));
-                    const isHorizontal = hasHorizontal && !hasVertical ? true : (!hasHorizontal && !hasVertical && bw > bh ? true : false);
-                    
-                    const svgNS = "http://www.w3.org/2000/svg";
-                    const svg = document.createElementNS(svgNS, "svg");
-                    svg.setAttribute("class", "audit-svg");
-                    
-                    if (isHorizontal) {
-                        svg.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by + bh/2 - 10}px;left:${bx}px;width:${bw}px;height:20px;overflow:visible;`;
-                        
-                        const line = document.createElementNS(svgNS, "line");
-                        line.setAttribute("x1", "0"); line.setAttribute("y1", "10");
-                        line.setAttribute("x2", String(bw)); line.setAttribute("y2", "10");
-                        line.setAttribute("stroke", appliedColor); line.setAttribute("stroke-width", "2");
-                        
-                        const leftArrow = document.createElementNS(svgNS, "polygon");
-                        leftArrow.setAttribute("points", "0,10 6,6 6,14");
-                        leftArrow.setAttribute("fill", appliedColor);
-                        
-                        const rightArrow = document.createElementNS(svgNS, "polygon");
-                        rightArrow.setAttribute("points", `${bw},10 ${bw-6},6 ${bw-6},14`);
-                        rightArrow.setAttribute("fill", appliedColor);
-                        
-                        svg.appendChild(line); svg.appendChild(leftArrow); svg.appendChild(rightArrow);
-                    } else { // vertical
-                        svg.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx + bw/2 - 10}px;width:20px;height:${bh}px;overflow:visible;`;
-                        
-                        const line = document.createElementNS(svgNS, "line");
-                        line.setAttribute("x1", "10"); line.setAttribute("y1", "0");
-                        line.setAttribute("x2", "10"); line.setAttribute("y2", String(bh));
-                        line.setAttribute("stroke", appliedColor); line.setAttribute("stroke-width", "2");
-                        
-                        const topArrow = document.createElementNS(svgNS, "polygon");
-                        topArrow.setAttribute("points", "10,0 6,6 14,6");
-                        topArrow.setAttribute("fill", appliedColor);
-                        
-                        const bottomArrow = document.createElementNS(svgNS, "polygon");
-                        bottomArrow.setAttribute("points", `10,${bh} 6,${bh-6} 14,${bh-6}`);
-                        bottomArrow.setAttribute("fill", appliedColor);
-                        
-                        svg.appendChild(line); svg.appendChild(topArrow); svg.appendChild(bottomArrow);
-                    }
-                    document.body.appendChild(svg);
-                    
-                    // Center the badge on the element for spacing arrows
-                    badgeX = bx + bw / 2 - 14;
-                    badgeY = by + bh / 2 - 14;
-                } else {
-                    const box = document.createElement('div');
-                    box.className = 'audit-marker-box';
-                    const r = parseInt(appliedColor.slice(1, 3), 16);
-                    const g = parseInt(appliedColor.slice(3, 5), 16);
-                    const b = parseInt(appliedColor.slice(5, 7), 16);
-                    box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:3px solid ${appliedColor};background:rgba(${r},${g},${b},0.15);`;
-                    document.body.appendChild(box);
-                }
-
-                // Edge safety (prevent clipping off top/left edges of screen)
+                // Edge safety
                 badgeX = Math.max(10, badgeX);
                 badgeY = Math.max(10, badgeY);
 
-                // Collision Detection: shift right if overlapping another badge
+                // Collision Detection
                 const badgeWidth = 28;
                 const badgeHeight = 28;
                 const MARGIN = 4;
                 let hasCollision = true;
-                
                 while (hasCollision) {
                     hasCollision = false;
                     for (const placed of placedBadges) {
@@ -1018,7 +911,6 @@ async function runAudit() {
                             badgeY < placed.y + badgeHeight + MARGIN &&
                             badgeY + badgeHeight + MARGIN > placed.y
                         ) {
-                            // Collision detected! Shift it rightwards
                             badgeX = placed.x + badgeWidth + MARGIN;
                             hasCollision = true;
                             if (badgeX > window.innerWidth - 40) {
@@ -1029,29 +921,14 @@ async function runAudit() {
                         }
                     }
                 }
-                
                 placedBadges.push({ x: badgeX, y: badgeY });
 
-                // Render the unified, highly distinct badge
-                const badgeContainer = document.createElement('div');
-                badgeContainer.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;display:flex;align-items:center;gap:4px;`;
-                
-                // 1. Issue Number Badge (Circle, matching layout color)
+                // Issue number badge (circle)
                 const numBadge = document.createElement('div');
                 numBadge.className = 'audit-marker-badge';
-                numBadge.textContent = badgeText;
-                numBadge.style.cssText = `min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
-                badgeContainer.appendChild(numBadge);
-
-                // 2. Secondary Pixel Value Badge (Square, Orange)
-                if (pixelValueText) {
-                    const valBadge = document.createElement('div');
-                    valBadge.textContent = pixelValueText;
-                    valBadge.style.cssText = `height:28px;padding:0 8px;background:${spacingColor};color:white;border-radius:4px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
-                    badgeContainer.appendChild(valBadge);
-                }
-
-                document.body.appendChild(badgeContainer);
+                numBadge.textContent = String(issue.issueNum);
+                numBadge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
+                document.body.appendChild(numBadge);
             });
         }, issueChunk);
 
