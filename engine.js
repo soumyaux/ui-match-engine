@@ -955,22 +955,32 @@ async function runAudit() {
       const color = palette[(issue.issueNum - 1) % palette.length];
       const detailRows = issue.details.map(d => {
         const parts = d.split(':');
+        // Handle legacy formatted strings or our new simple hints
         if (parts.length >= 2) {
           const key = parts[0].trim();
           const val = parts.slice(1).join(':').trim();
-          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #f1f5f9;font-size:14px;color:#475569;">
-            <span style="font-weight:600;min-width:140px;flex-shrink:0;color:#0f1b35;">${key}</span>
-            <span style="text-align:right;background:#f8fafc;padding:6px 10px;border-radius:6px;border:1px solid #e2e8f0;font-family:monospace;letter-spacing:-0.2px;">${val}</span>
+          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#475569;width:100%;">
+            <span style="font-weight:600;color:#0f1b35;">${key}</span>
+            <span style="text-align:right;background:#f8fafc;padding:4px 8px;border-radius:6px;border:1px solid #e2e8f0;font-family:monospace;letter-spacing:-0.2px;">${val}</span>
           </div>`;
         }
-        return `<div style="padding:4px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#475569;">${d}</div>`;
+        // New compact inline tag style for simple hints
+        // We use a light, subtle background based on an alpha version of the primary color or a neutral tone
+        return `<span style="display:inline-block;background:#f8fafc;border:1px solid #e2e8f0;padding:4px 10px;border-radius:12px;font-size:13px;color:#334155;font-weight:500;">${d}</span>`;
       }).join('');
+      
+      // If we have legacy rows, we wrap them normally, but for our inline tags we use a flex gap layout
+      const hasLegacyRows = issue.details.some(d => d.includes(':'));
+      const detailsContainerStyle = hasLegacyRows 
+        ? `display:flex;flex-direction:column;`
+        : `display:flex;flex-wrap:wrap;gap:8px;margin-top:2px;`;
+
       return `
-      <div style="display:flex;gap:14px;padding:16px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,0.06);border-left:4px solid ${color};">
-        <div style="min-width:32px;height:32px;background:${color};color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">${issue.issueNum}</div>
+      <div style="display:flex;gap:12px;padding:14px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.1);border-left:4px solid ${color};">
+        <div style="min-width:28px;height:28px;background:${color};color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0;">${issue.issueNum}</div>
         <div style="flex:1;">
-          <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:6px;">${issue.element}</div>
-          <div style="border-radius:8px;">${detailRows}</div>
+          <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:8px;line-height:1.2;">${issue.element}</div>
+          <div style="${detailsContainerStyle}">${detailRows}</div>
         </div>
       </div>`;
     }).join('');
