@@ -320,7 +320,7 @@ async function runAudit() {
         if (design.fs && design.fs !== 'Mixed') {
           const liveSize = parseFloat(live.fontSize);
           const diff = Math.round(liveSize - design.fs);
-          if (Math.abs(diff) > 0.5) errors.push(`Font Size: Figma ${design.fs}px → Live ${liveSize}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+          if (Math.abs(diff) > 2) errors.push(`Font Size: Figma ${design.fs}px → Live ${liveSize}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
         }
         // ── FONT FAMILY ──
         if (design.ff && design.ff !== 'Mixed' && live.fontFamily) {
@@ -354,19 +354,19 @@ async function runAudit() {
         if (design.br !== undefined && design.br !== 'Mixed' && design.br > 0) {
           const liveRadius = parseFloat(live.borderRadius) || 0;
           const diff = Math.round(liveRadius - design.br);
-          if (Math.abs(diff) > 1) errors.push(`Border Radius: Figma ${design.br}px → Live ${liveRadius}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+          if (Math.abs(diff) > 2) errors.push(`Border Radius: Figma ${design.br}px → Live ${liveRadius}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
         }
         // ── LETTER SPACING ──
         if (design.ls !== undefined && design.ls !== 'Mixed') {
           const liveLs = live.letterSpacing === 'normal' ? 0 : parseFloat(live.letterSpacing) || 0;
           const expectedLs = typeof design.ls === 'number' ? design.ls : 0;
-          if (Math.abs(liveLs - expectedLs) > 0.5) errors.push(`Letter Spacing: Figma ${expectedLs}px → Live ${liveLs}px`);
+          if (Math.abs(liveLs - expectedLs) > 2) errors.push(`Letter Spacing: Figma ${expectedLs}px → Live ${liveLs}px`);
         }
         // ── LINE HEIGHT ──
         if (design.lh !== undefined && design.lh !== 'Mixed') {
           const liveLh = live.lineHeight === 'normal' ? 0 : parseFloat(live.lineHeight) || 0;
           const expectedLh = typeof design.lh === 'number' ? design.lh : 0;
-          if (expectedLh > 0 && liveLh > 0 && Math.abs(liveLh - expectedLh) > 1) {
+          if (expectedLh > 0 && liveLh > 0 && Math.abs(liveLh - expectedLh) > 2) {
             const diff = Math.round(liveLh - expectedLh);
             errors.push(`Line Height: Figma ${expectedLh}px → Live ${liveLh}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
           }
@@ -394,7 +394,7 @@ async function runAudit() {
         // ── BORDER WIDTH ──
         if (design.bw !== undefined && design.bw > 0) {
           const liveBw = parseFloat(live.borderWidth) || 0;
-          if (Math.abs(liveBw - design.bw) > 0.5) errors.push(`Border Width: Figma ${design.bw}px → Live ${liveBw}px`);
+          if (Math.abs(liveBw - design.bw) > 2) errors.push(`Border Width: Figma ${design.bw}px → Live ${liveBw}px`);
         }
         // ── BORDER COLOR ──
         if (design.bc) {
@@ -414,7 +414,7 @@ async function runAudit() {
           sides.forEach(s => {
             if (s.figma > 0) {
               const diff = Math.round(s.live - s.figma);
-              if (Math.abs(diff) > 1) errors.push(`Padding ${s.name}: Figma ${s.figma}px → Live ${s.live}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+              if (Math.abs(diff) > 2) errors.push(`Padding ${s.name}: Figma ${s.figma}px → Live ${s.live}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
             }
           });
         }
@@ -422,10 +422,14 @@ async function runAudit() {
         if (design.gap !== undefined) {
           const liveGap = live.gap === 'normal' ? 0 : parseFloat(live.gap) || 0;
           const diff = Math.round(liveGap - design.gap);
-          if (Math.abs(diff) > 1) errors.push(`Gap: Figma ${design.gap}px → Live ${liveGap}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+          if (Math.abs(diff) > 2) errors.push(`Gap: Figma ${design.gap}px → Live ${liveGap}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
         }
         // ── WIDTH / HEIGHT ──
-        if (design.w !== undefined && design.w > 0) {
+        // Only evaluate strict widths for inline or tangible components (buttons, inputs, images)
+        // Structural containers (DIV, SECTION, MAIN) are naturally fluid in CSS and commonly cause false flags.
+        const isStructural = tag === 'SECTION' || tag === 'MAIN' || (tag === 'DIV' && rect.width > 300);
+        
+        if (design.w !== undefined && design.w > 0 && !isStructural) {
           const diff = Math.round(rect.width - design.w);
           if (Math.abs(diff) > 2) errors.push(`Width: Figma ${design.w}px → Live ${Math.round(rect.width)}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
         }
@@ -844,18 +848,22 @@ async function runAudit() {
                 let pixelValueText = null;
 
                 if (isSpacingOnly) {
-                    // Extract pixel value from the first detail string, e.g., "Padding Top: Figma 16px → Live 0px"
-                    const detailStr = issue.details[0];
-                    const match = detailStr.match(/Figma (\d+)px/);
-                    if (match) {
-                        let prefix = "";
-                        if (detailStr.startsWith("Width")) prefix = "W: ";
-                        else if (detailStr.startsWith("Height")) prefix = "H: ";
-                        else if (detailStr.startsWith("Gap")) prefix = "Gap: ";
-                        else if (detailStr.startsWith("Margin")) prefix = "M: ";
-                        else if (detailStr.startsWith("Padding")) prefix = "Pad: ";
-                        
-                        pixelValueText = prefix + match[1] + "px";
+                    // Extract pixel value from the correct detail string, skipping Font/Color errors
+                    const detailStr = issue.details.find(d => d.startsWith('Padding') || d.startsWith('Gap') || d.startsWith('Margin') || d.startsWith('Width') || d.startsWith('Height'));
+                    
+                    if (detailStr) {
+                        // Supports decimals and negative values
+                        const match = detailStr.match(/Figma ([-.\d]+)px/);
+                        if (match) {
+                            let prefix = "";
+                            if (detailStr.startsWith("Width")) prefix = "W: ";
+                            else if (detailStr.startsWith("Height")) prefix = "H: ";
+                            else if (detailStr.startsWith("Gap")) prefix = "Gap: ";
+                            else if (detailStr.startsWith("Margin")) prefix = "M: ";
+                            else if (detailStr.startsWith("Padding")) prefix = "Pad: ";
+                            
+                            pixelValueText = prefix + match[1] + "px";
+                        }
                     }
 
                     // Decide vertical or horizontal arrow
