@@ -1006,7 +1006,7 @@ async function runAudit() {
     <div style="display:flex;gap:16px;margin-top:24px;">
       <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
         <div style="font-size:28px;font-weight:800;">${trueMatchScore}%</div>
-        <div style="font-size:11px;">True Match Score</div>
+        <div style="font-size:11px;">Token Match Score</div>
       </div>
       <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
         <div style="font-size:28px;font-weight:800;">${visualMatchScore}%</div>
