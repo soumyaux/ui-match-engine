@@ -71,10 +71,30 @@ jobs:
           curl -sL "${{ github.event.inputs.figma_image_url }}" -o figma-frame.png
           echo "Figma image size: $(wc -c < figma-frame.png) bytes"
 
+      - name: 📦 Cache Node Modules
+        id: cache-npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-build-npm-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-build-npm-
+
+      - name: 📦 Cache Playwright Binaries
+        id: cache-playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
       - name: Install & Run Engine
         run: |
           npm install playwright pixelmatch pngjs
-          npx playwright install --with-deps chromium
+          if [ "${{ steps.cache-playwright.outputs.cache-hit }}" != "true" ]; then
+            npx playwright install --with-deps chromium
+          fi
           node engine.js
         env:
           TARGET_URL: ${{ github.event.inputs.url }}
