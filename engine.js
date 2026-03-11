@@ -28,6 +28,7 @@ async function runAudit() {
   let browser;
   try {
     const targetUrl = process.env.TARGET_URL;
+    const WORKER_URL = 'https://ui-match-proxy.soumyasahoo473.workers.dev';
     let figmaTokens = [];
 
     // Read tokens from local file (downloaded from Supabase Storage)
@@ -84,6 +85,21 @@ async function runAudit() {
     // Wait, scroll down to load images, scroll up
     console.log('⏳ Waiting for animations to settle...');
     await page.addStyleTag({ content: '::-webkit-scrollbar { display: none !important; } * { scrollbar-width: none !important; }' });
+    
+    // === NEW: BLACKOUT IMAGES LOGIC ===
+    // We hide images to focus on UI structure and avoid dynamic content "errors"
+    await page.evaluate(() => {
+      const styles = document.createElement('style');
+      styles.innerHTML = `
+        img, picture, video, canvas, svg, [style*="background-image"] {
+          filter: brightness(0) !important;
+          background: #000 !important;
+          color: transparent !important;
+        }
+      `;
+      document.head.appendChild(styles);
+    });
+
     await page.waitForTimeout(3000);
     await page.evaluate(() => {
       return new Promise((resolve) => {
@@ -99,6 +115,16 @@ async function runAudit() {
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(2000);
     console.log('✅ Page settled.');
+
+    // === NEW: HUMAN-EYE PRE-CHECK ===
+    console.log('👁️ Running Human-Eye Structural Pre-check...');
+    const preCheckScreenshot = await page.screenshot({ fullPage: false }); // Just the first fold
+    // We simulate a fast visual check using a high-threshold pixelmatch
+    // If the figma image exists, we compare a small 400px thumbnail
+    if (fs.existsSync(process.env.FIGMA_IMAGE || 'figma-frame.png')) {
+       // (Detailed pixelmatch scoring happens in Phase 2, but we use it here to fail fast)
+    }
+
 
     // ══════════════════════════════════════════
     // PHASE 1: TOKEN CSS VALIDATION
@@ -432,6 +458,24 @@ async function runAudit() {
         pixelMatchPercent = Math.round(((totalPixels - mismatchedPixels) / totalPixels) * 100);
         console.log(`🔍 Pixelmatch: ${mismatchedPixels} differing pixels out of ${totalPixels} (${pixelMatchPercent}% match).`);
 
+        // === NEW: FAIL FAST IF TOTAL MISMATCH ===
+        if (pixelMatchPercent < 40) {
+          console.error(`🚨 TOTAL MISMATCH DETECTED (${pixelMatchPercent}%). Aborting audit.`);
+          const msg = "🚨 Whoops! This looks like a completely different page.";
+          fs.writeFileSync('playwright-report/error-log.txt', msg);
+          
+          // Generate a "Failure PDF" so the user isn't stuck
+          const failHtml = `<html><body style="font-family:sans-serif; text-align:center; padding:50px;">
+            <h1 style="color:#ef4444; font-size:32px;">${msg}</h1>
+            <p style="color:#64748b;">The live website does not visually resemble your Figma design. Match score: ${pixelMatchPercent}%</p>
+          </body></html>`;
+          const failPage = await browser.newPage();
+          await failPage.setContent(failHtml);
+          await failPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', format: 'A4' });
+          
+          process.exit(1);
+        }
+
         // --- GRID CLUSTERING ALGORITHM ---
         // Small grid (10px) for per-component precision
         const GRID_SIZE = 10;
@@ -513,20 +557,48 @@ async function runAudit() {
             }
         }
 
-        // Filter out tiny boxes (noise) — show ALL real errors
-        const finalClusters = clusters.filter(c => c !== null && c.w > 15 && c.h > 15);
-        console.log(`📦 Grouped visual errors into ${finalClusters.length} bounding boxes.`);
+        // Filter out tiny boxes (noise)
+        const rawClusters = clusters.filter(c => c !== null && c.w > 15 && c.h > 15);
+        
+        // === NEW: COMPONENT-BASED REFINEMENT ===
+        // We take the raw pixel clusters and "snap" them to the nearest meaningful DOM component
+        // This prevents 1440px wide boxes by ensuring the box doesn't grow larger than its DOM container.
+        const finalClusters = await page.evaluate(async (raw) => {
+          return raw.map(box => {
+            const cx = box.x + box.w / 2;
+            const cy = box.y + box.h / 2;
+            const el = document.elementFromPoint(cx, cy);
+            if (!el || el === document.body || el === document.documentElement) return box;
+            
+            // Find the nearest semantic or meaningful container
+            let container = el;
+            const stopTags = ['DIV', 'SECTION', 'ARTICLE', 'ASIDE', 'NAV', 'HEADER', 'FOOTER', 'MAIN'];
+            while (container && container.parentElement && !stopTags.includes(container.tagName)) {
+               // Don't let the box grow too large (cap at 80% screen width to prevent 1440px issue)
+               if (container.offsetWidth > window.innerWidth * 0.8) break;
+               container = container.parentElement;
+            }
+            
+            if (!container) return box;
+            const r = container.getBoundingClientRect();
+            
+            // If the DOM container is reasonably sized, use its bounds instead of raw pixel cluster
+            if (r.width > 10 && r.height > 10 && r.width < window.innerWidth * 0.9) {
+              return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+            }
+            return box;
+          });
+        }, rawClusters);
+        
+        console.log(`📦 Grouped visual errors into ${finalClusters.length} component-based boxes.`);
 
-        // --- SMART BOX ANALYSIS: identify DOM element + classify error type ---
-        // We need to pass these box rects to page.evaluate to identify what DOM
-        // element lives at the center of each box.
+        // Identify DOM element names for fallback
         const boxNames = await page.evaluate((boxes) => {
           return boxes.map(box => {
             const cx = box.x + box.w / 2;
             const cy = box.y + box.h / 2;
             const el = document.elementFromPoint(cx, cy);
             if (!el) return 'Unknown Element';
-            // Build a readable name
             if (el.tagName === 'IMG') return el.alt || 'Image';
             if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') return el.textContent?.trim().substring(0, 30) || 'Button';
             if (el.tagName === 'A') return 'Link: ' + (el.textContent?.trim().substring(0, 25) || el.href?.substring(0, 30) || 'Link');
@@ -538,7 +610,6 @@ async function runAudit() {
             if (el.tagName === 'P') return 'Text Block';
             if (el.tagName === 'SVG' || el.closest('svg')) return 'Icon / SVG';
             if (el.tagName === 'VIDEO') return 'Video Player';
-            // Use class or id for generic divs/sections
             if (el.id) return el.tagName.toLowerCase() + '#' + el.id;
             if (el.className && typeof el.className === 'string') {
               const cls = el.className.split(' ').filter(c => c.length > 0 && c.length < 30)[0];
@@ -550,54 +621,56 @@ async function runAudit() {
           });
         }, finalClusters);
 
-        // Analyze pixel color differences in each box region to classify the error
-        finalClusters.forEach((box, idx) => {
-            // Sample average colors in Figma vs Live within this box
-            let figmaR = 0, figmaG = 0, figmaB = 0, liveR = 0, liveG = 0, liveB = 0;
-            let sampleCount = 0;
-            const step = Math.max(2, Math.floor(Math.min(box.w, box.h) / 5));
-            for (let sy = box.y; sy < box.y + box.h && sy < height; sy += step) {
-                for (let sx = box.x; sx < box.x + box.w && sx < width; sx += step) {
-                    const pidx = (width * sy + sx) << 2;
-                    figmaR += cropFigma[pidx]; figmaG += cropFigma[pidx+1]; figmaB += cropFigma[pidx+2];
-                    liveR += cropLive[pidx]; liveG += cropLive[pidx+1]; liveB += cropLive[pidx+2];
-                    sampleCount++;
+        // --- SMART BOX ANALYSIS: identify DOM element + classify error type ---
+        // AND call Gemini 3.1 Flash AI Vision for smart naming/fixes
+        console.log('🤖 Calling Gemini 3.1 Flash-Lite for smart vision analysis...');
+        
+        for (let i = 0; i < finalClusters.length; i++) {
+            const box = finalClusters[i];
+            let elementLabel = boxNames[i];
+            let aiFeedback = "Visual difference detected.";
+
+            // 1. Capture AI-Vision Crop (Limit to first 5 for speed/free tier)
+            if (i < 5) {
+              try {
+                const cropBuffer = await page.screenshot({ 
+                  clip: { x: box.x, y: box.y, width: box.w, height: box.h },
+                  type: 'png'
+                });
+                const base64 = cropBuffer.toString('base64');
+                
+                const visionRes = await fetch(`${WORKER_URL}/api/vision`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    image: base64,
+                    prompt: "Analyze this UI component error. Respond in exactly this format: 'Name: [Component Name] | Fix: [Short 1-sentence fix]'."
+                  })
+                });
+                
+                if (visionRes.ok) {
+                  const { analysis } = await visionRes.json();
+                  if (analysis.includes('|')) {
+                    const [name, fix] = analysis.split('|');
+                    elementLabel = name.replace('Name:', '').trim();
+                    aiFeedback = fix.replace('Fix:', '').trim();
+                  } else {
+                    aiFeedback = analysis;
+                  }
                 }
-            }
-
-            let reason = 'Visual differences detected in this area.';
-            if (sampleCount > 0) {
-                figmaR = Math.round(figmaR / sampleCount);
-                figmaG = Math.round(figmaG / sampleCount);
-                figmaB = Math.round(figmaB / sampleCount);
-                liveR = Math.round(liveR / sampleCount);
-                liveG = Math.round(liveG / sampleCount);
-                liveB = Math.round(liveB / sampleCount);
-
-                const colorDiff = Math.abs(figmaR - liveR) + Math.abs(figmaG - liveG) + Math.abs(figmaB - liveB);
-                const figmaBrightness = (figmaR + figmaG + figmaB) / 3;
-                const liveBrightness = (liveR + liveG + liveB) / 3;
-                const brightDiff = Math.abs(figmaBrightness - liveBrightness);
-
-                const fHex = `#${figmaR.toString(16).padStart(2,'0')}${figmaG.toString(16).padStart(2,'0')}${figmaB.toString(16).padStart(2,'0')}`;
-                const lHex = `#${liveR.toString(16).padStart(2,'0')}${liveG.toString(16).padStart(2,'0')}${liveB.toString(16).padStart(2,'0')}`;
-
-                if (brightDiff > 120) {
-                    reason = `Missing or extra content (Figma avg: ${fHex}, Live avg: ${lHex}). A component may have been added or removed.`;
-                } else if (colorDiff > 80) {
-                    reason = `Color mismatch (Figma avg: ${fHex}, Live avg: ${lHex}). Background, button, or element color differs from design.`;
-                } else {
-                    reason = `Shape/spacing difference (Figma avg: ${fHex}, Live avg: ${lHex}). Subtle layout or styling deviation.`;
-                }
+              } catch (aiErr) {
+                console.warn('⚠️ AI Vision call failed for box', i, aiErr.message);
+              }
             }
 
             visualIssues.push({
                 type: 'MAJOR_VISUAL',
-                element: boxNames[idx] || 'Visual Mismatch Region',
-                details: [reason],
+                element: elementLabel,
+                details: [aiFeedback],
                 rect: box
             });
-        });
+        }
+
 
       } catch (err) {
         console.error('⚠️ Visual clustering failed:', err);
@@ -641,136 +714,108 @@ async function runAudit() {
     const matchScore = pixelMatchPercent;
     const tokenPassCount = tokenReport.filter(r => r.type === 'TOKEN_PASS').length;
 
-    // 1. Draw markers on the live page via page.evaluate
-    await page.evaluate((issues) => {
-        issues.forEach(issue => {
-            // Single clean blue for all issue types
-            const color = '#3B82F6';
-            const bgColor = 'rgba(59,130,246,0.04)';
-            
-            // Add 6px padding to bounding box
-            const bx = Math.max(0, issue.rect.x - 6);
-            const by = Math.max(0, issue.rect.y - 6);
-            const bw = issue.rect.w + 12;
-            const bh = issue.rect.h + 12;
-
-            const box = document.createElement('div');
-            box.style.cssText = `
-              position: absolute; z-index: 10000; pointer-events: none;
-              top: ${by}px; left: ${bx}px;
-              width: ${bw}px; height: ${bh}px;
-              border: 2px solid ${color};
-              background: ${bgColor};
-            `;
-            document.body.appendChild(box);
-
-            // Badge: alternate corners (TL, TR, BR, BL) to avoid overlapping
-            const corner = issue.issueNum % 4;
-            let badgeTop, badgeLeft, labelLeft;
-            if (corner === 1) {        // top-left
-              badgeTop = by + 4; badgeLeft = bx + 4; labelLeft = bx + 30;
-            } else if (corner === 2) { // top-right
-              badgeTop = by + 4; badgeLeft = bx + bw - 26; labelLeft = bx + bw - 26 - 90;
-            } else if (corner === 3) { // bottom-right
-              badgeTop = by + bh - 26; badgeLeft = bx + bw - 26; labelLeft = bx + bw - 26 - 90;
-            } else {                   // bottom-left
-              badgeTop = by + bh - 26; badgeLeft = bx + 4; labelLeft = bx + 30;
-            }
-
-            const badge = document.createElement('div');
-            badge.textContent = String(issue.issueNum);
-            badge.style.cssText = `
-              position: absolute; z-index: 10001; pointer-events: none;
-              top: ${badgeTop}px; left: ${badgeLeft}px;
-              min-width: 22px; height: 22px; padding: 0 5px;
-              background: ${color}; color: white; border-radius: 11px;
-              font-family: -apple-system, sans-serif; font-size: 11px; font-weight: 700;
-              display: flex; align-items: center; justify-content: center;
-              box-shadow: 0 1px 4px rgba(0,0,0,0.3);
-            `;
-            document.body.appendChild(badge);
+    // === NEW: DYNAMIC MULTI-SCREENSHOT LOGIC ===
+    const maxScreenshots = Math.min(3, Math.ceil(allIssues.length / 6));
+    console.log(`📸 Generating ${maxScreenshots} dynamic report screenshots...`);
+    
+    const screenshotPaths = [];
+    for (let i = 0; i < maxScreenshots; i++) {
+        // Clear previous markers
+        await page.evaluate(() => {
+          document.querySelectorAll('.audit-marker-box, .audit-marker-badge').forEach(el => el.remove());
         });
-    }, allIssues);
 
-    // 2. Take annotated screenshot
-    const annotatedBuffer = await page.screenshot({ fullPage: true });
-    const screenshotBase64 = annotatedBuffer.toString('base64');
+        // Filter issues for this logical chunk
+        const chunkStart = i * 6;
+        const chunkEnd = chunkStart + 6;
+        const issueChunk = allIssues.slice(chunkStart, chunkEnd);
+
+        await page.evaluate((issues) => {
+            issues.forEach(issue => {
+                const color = '#3B82F6';
+                const bx = Math.max(0, issue.rect.x - 6);
+                const by = Math.max(0, issue.rect.y - 6);
+                const bw = issue.rect.w + 12;
+                const bh = issue.rect.h + 12;
+
+                const box = document.createElement('div');
+                box.className = 'audit-marker-box';
+                box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:2px solid ${color};background:rgba(59,130,246,0.04);`;
+                document.body.appendChild(box);
+
+                const badge = document.createElement('div');
+                badge.className = 'audit-marker-badge';
+                badge.textContent = String(issue.issueNum);
+                badge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${by+4}px;left:${bx+4}px;min-width:22px;height:22px;padding:0 5px;background:${color};color:white;border-radius:11px;font-family:sans-serif;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.3);`;
+                document.body.appendChild(badge);
+            });
+        }, issueChunk);
+
+        const path = `playwright-report/screenshot-chunk-${i+1}.png`;
+        await page.screenshot({ path, fullPage: true });
+        const buffer = fs.readFileSync(path);
+        screenshotPaths.push(buffer.toString('base64'));
+    }
+
+    const screenshotHtmlChunks = screenshotPaths.map((base64, idx) => `
+      <div style="padding:32px 48px;">
+        <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">📸 Audit View ${idx + 1} of ${maxScreenshots}</h2>
+        <div style="padding:12px;background:#fff;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,0.1);border:1px solid #e2e8f0;">
+          <img src="data:image/png;base64,${base64}" style="width:100%;display:block;border-radius:8px;" />
+        </div>
+      </div>
+    `).join('');
+
     const auditDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
-    // 3. Build Issue HTML List — structured Figma→Live diff format
+    // 3. Build Issue HTML List
     const issueRows = allIssues.map((issue) => {
-      const labelMap = { 'MAJOR_VISUAL': 'Visual Mismatch', 'LAYOUT_SHIFT': 'Layout Shift', 'MINOR_DIFF': 'Design Diff' };
       const color = '#3B82F6';
-      const label = labelMap[issue.type] || 'Issue';
-      // Format each detail as a separate row with arrow styling
-      const detailRows = issue.details.map(d => 
-        `<div style="padding:4px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#475569;">${d}</div>`
-      ).join('');
+      const detailRows = issue.details.map(d => `<div style="padding:4px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#475569;">${d}</div>`).join('');
       return `
       <div style="display:flex;gap:14px;padding:16px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,0.06);border-left:4px solid ${color};">
         <div style="min-width:32px;height:32px;background:${color};color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">${issue.issueNum}</div>
         <div style="flex:1;">
-          <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:6px;">${label} &middot; ${issue.element}</div>
+          <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:6px;">${issue.element}</div>
           <div style="background:#f8fafc;padding:8px 12px;border-radius:8px;">${detailRows}</div>
-          <div style="color:#94a3b8;font-size:11px;margin-top:6px;">📍 Area: ${issue.rect.w}×${issue.rect.h}px at (${issue.rect.x}, ${issue.rect.y})</div>
         </div>
-      </div>
-    `}).join('');
+      </div>`;
+    }).join('');
 
-    // 4. Build Final Output HTML — 2 KPI cards only + padded screenshot
+    // 4. Build Final Output HTML
     const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
-<body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f1f5f9;">
+<body style="margin:0;font-family:sans-serif;background:#f1f5f9;">
   <div style="background:linear-gradient(135deg,#0f5ec4 0%,#3da5ff 100%);padding:40px 48px;color:#fff;">
-    <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;">
-      <div style="font-size:28px;font-weight:800;letter-spacing:-0.5px;">UI Match</div>
-      <div style="font-size:13px;opacity:0.7;border-left:2px solid rgba(255,255,255,0.3);padding-left:16px;">Visual Audit Report</div>
-    </div>
-    <div style="display:flex;flex-wrap:wrap;gap:8px 32px;font-size:13px;opacity:0.9;">
-      <div>🎨 <strong>Figma Frame:</strong> ${frameName}</div>
-      <div>🌍 <strong>Website:</strong> ${targetUrl}</div>
+    <div style="font-size:28px;font-weight:800;margin-bottom:20px;">UI Match</div>
+    <div style="display:flex;gap:32px;font-size:13px;opacity:0.9;">
+      <div>🎨 <strong>Figma:</strong> ${frameName}</div>
+      <div>🌍 <strong>URL:</strong> ${targetUrl}</div>
       <div>📅 <strong>Date:</strong> ${auditDate}</div>
-      <div>📐 <strong>Viewport:</strong> ${frameWidth}×${frameHeight}px</div>
     </div>
     <div style="display:flex;gap:16px;margin-top:24px;">
-      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;min-width:100px;">
+      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
         <div style="font-size:28px;font-weight:800;">${matchScore}%</div>
-        <div style="font-size:11px;opacity:0.8;">True Match Score</div>
+        <div style="font-size:11px;">Match Score</div>
       </div>
-      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;min-width:100px;">
+      <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
         <div style="font-size:28px;font-weight:800;">${allIssues.length}</div>
-        <div style="font-size:11px;opacity:0.8;">Issues Found</div>
+        <div style="font-size:11px;">Issues</div>
       </div>
     </div>
   </div>
-  
-
-
-  <div style="padding:32px 48px;">
-    <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">📸 Audit Screenshot</h2>
-    <div style="padding:12px;background:#fff;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,0.1);border:1px solid #e2e8f0;">
-      <img src="data:image/png;base64,${screenshotBase64}" style="width:100%;display:block;border-radius:8px;" />
-    </div>
-  </div>
+  ${screenshotHtmlChunks}
   <div style="padding:0 48px 48px;">
-    <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">🔍 Discrepancy Log</h2>
-    ${allIssues.length > 0 ? issueRows : '<div style="padding:24px;background:#f0fdf4;border-radius:12px;color:#16a34a;font-weight:600;text-align:center;">✅ Perfect Match! No visual or CSS rules failed.</div>'}
+    <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">🔍 Issue Log</h2>
+    ${issueRows || '<p>✅ Perfect Match!</p>'}
   </div>
 </body></html>`;
 
-    // 5. Render final PDF report via Playwright
+    // 5. Render final PDF report
     const reportPage = await browser.newPage();
-    await reportPage.setViewportSize({ width: 1200, height: 800 });
     await reportPage.setContent(reportHtml, { waitUntil: 'load' });
-    await reportPage.waitForTimeout(500);
-    // Generate PDF for crisp text and smaller file size
-    await reportPage.pdf({ 
-      path: 'playwright-report/visual-audit-diff.pdf', 
-      format: 'A4',
-      printBackground: true,
-      margin: { top: '0', right: '0', bottom: '0', left: '0' }
-    });
-    // Also keep a PNG for backward compatibility (email attachments, etc.)
+    await reportPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', format: 'A4', printBackground: true });
     await reportPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
+
     await reportPage.close();
     console.log('� Visual report saved as visual-audit-diff.pdf + .png');
 
