@@ -922,7 +922,11 @@ async function runAudit() {
 
   } catch (error) {
     console.error('❌ Audit failed:', error);
-    fs.writeFileSync('playwright-report/error-log.txt', `Crash Report:\n${error.stack}`);
+    if (error.message && error.message.includes('Abort')) {
+      fs.writeFileSync('playwright-report/error-log.txt', error.message);
+    } else {
+      fs.writeFileSync('playwright-report/error-log.txt', `Crash Report:\n${error.stack}`);
+    }
     process.exit(1);
   } finally {
     if (browser) await browser.close();
