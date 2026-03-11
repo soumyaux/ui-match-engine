@@ -245,7 +245,18 @@ async function runAudit() {
         const a = parseColorBrowser(figmaHex);
         const b = parseColorBrowser(liveRaw);
         if (!a || !b) return true;
-        return a === b;
+        if (a === b) return true;
+        // RGB tolerance: allow ±5 per channel to avoid sub-pixel rendering false flags
+        const hexToRgb = (hex) => {
+          const h = hex.replace('#', '');
+          return [parseInt(h.substring(0,2),16), parseInt(h.substring(2,4),16), parseInt(h.substring(4,6),16)];
+        };
+        if (a.startsWith('#') && a.length === 7 && b.startsWith('#') && b.length === 7) {
+          const [r1,g1,b1] = hexToRgb(a);
+          const [r2,g2,b2] = hexToRgb(b);
+          return Math.abs(r1-r2) <= 5 && Math.abs(g1-g2) <= 5 && Math.abs(b1-b2) <= 5;
+        }
+        return false;
       }
       // Walk UP to the nearest top-level/semantic parent component
       function getElementName(el) {
@@ -360,7 +371,17 @@ async function runAudit() {
             }
           }
           if (design.fw && design.fw !== 'Mixed') {
-            const weightMap = { 'Thin': '100', 'ExtraLight': '200', 'Light': '300', 'Regular': '400', 'Medium': '500', 'SemiBold': '600', 'Bold': '700', 'ExtraBold': '800', 'Black': '900' };
+            const weightMap = {
+              'Thin': '100', 'Hairline': '100',
+              'ExtraLight': '200', 'Extra Light': '200', 'UltraLight': '200', 'Ultra Light': '200',
+              'Light': '300',
+              'Regular': '400', 'Normal': '400', 'Book': '400',
+              'Medium': '500',
+              'SemiBold': '600', 'Semi Bold': '600', 'DemiBold': '600', 'Demi Bold': '600',
+              'Bold': '700',
+              'ExtraBold': '800', 'Extra Bold': '800', 'UltraBold': '800', 'Ultra Bold': '800',
+              'Black': '900', 'Heavy': '900'
+            };
             const expectedWeight = weightMap[design.fw] || design.fw;
             if (live.fontWeight !== expectedWeight && live.fontWeight !== String(expectedWeight)) {
               errors.push(`Font Weight: Figma ${expectedWeight} → Live ${live.fontWeight}`);
@@ -459,16 +480,33 @@ async function runAudit() {
         // ═══════════════════════════════════════
         if (role === 'leaf' && isTangible) {
           if (design.w !== undefined && design.w > 0) {
-            const diff = Math.round(rect.width - design.w);
-            if (Math.abs(diff) > 2) errors.push(`Width: Figma ${design.w}px → Live ${Math.round(rect.width)}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+            const diffW = Math.round(rect.width - design.w);
+            if (Math.abs(diffW) > 2) errors.push(`Width: Figma ${design.w}px → Live ${Math.round(rect.width)}px (Δ ${diffW > 0 ? '+' : ''}${diffW}px)`);
           }
           if (design.h !== undefined && design.h > 0) {
-            const diff = Math.round(rect.height - design.h);
-            if (Math.abs(diff) > 2) errors.push(`Height: Figma ${design.h}px → Live ${Math.round(rect.height)}px (Δ ${diff > 0 ? '+' : ''}${diff}px)`);
+            const diffH = Math.round(rect.height - design.h);
+            if (Math.abs(diffH) > 2) errors.push(`Height: Figma ${design.h}px → Live ${Math.round(rect.height)}px (Δ ${diffH > 0 ? '+' : ''}${diffH}px)`);
           }
         }
 
-        if (errors.length > 0) {
+        // ═══════════════════════════════════════
+        // SAFETY NET: Drop errors where values actually match
+        // ═══════════════════════════════════════
+        // This catches edge-cases where the comparison logic fires but the 
+        // displayed Figma and Live values are visually identical.
+        const filteredErrors = errors.filter(e => {
+          // Check if "Figma X" and "Live X" contain the same value
+          const figmaVal = e.match(/Figma\s+([^→]+?)\s*→/);
+          const liveVal = e.match(/→\s*Live\s+(.+?)(?:\s*\(|$)/);
+          if (figmaVal && liveVal) {
+            const f = figmaVal[1].trim().toLowerCase();
+            const l = liveVal[1].trim().toLowerCase();
+            if (f === l) return false; // Drop this error — values are the same!
+          }
+          return true;
+        });
+
+        if (filteredErrors.length > 0) {
           // === DEDUP: check if this DOM element was already reported ===
           // Use a unique key based on element tag + position to detect same element
           const elKey = `${tag}_${Math.round(rect.left)}_${Math.round(rect.top)}_${Math.round(rect.width)}`;
@@ -478,15 +516,15 @@ async function runAudit() {
             const existing = results[existingIdx];
             if (existing) {
               // Add new errors that aren't already listed
-              errors.forEach(e => {
+              filteredErrors.forEach(e => {
                 if (!existing.details.includes(e)) existing.details.push(e);
               });
             }
             return; // Don't create a new issue
           }
 
-          const layoutErrors = errors.filter(e => e.startsWith('Width:') || e.startsWith('Height:'));
-          const styleErrors = errors.filter(e => !e.startsWith('Width:') && !e.startsWith('Height:'));
+          const layoutErrors = filteredErrors.filter(e => e.startsWith('Width:') || e.startsWith('Height:'));
+          const styleErrors = filteredErrors.filter(e => !e.startsWith('Width:') && !e.startsWith('Height:'));
           
           tokenFailures++;
           
