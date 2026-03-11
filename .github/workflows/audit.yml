@@ -137,4 +137,4 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
-            -d "{\"audit_status\": \"failed\", \"error_logs\": $ERROR_JSON, \"audit_png_url\": \"$PNG_URL\"}"
+            -d "{\"audit_status\": \"failed\", \"error_message\": $ERROR_JSON, \"audit_png_url\": \"$PNG_URL\"}"
