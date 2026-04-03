@@ -101,6 +101,10 @@ jobs:
           TOKENS_FILE: tokens.json
           FIGMA_IMAGE: figma-frame.png
           FRAME_NAME: ${{ github.event.inputs.frame_name }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SCAN_ID: ${{ github.event.inputs.scan_id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
       - name: 📸 Upload Visual Audit Report to Supabase
         if: always()
