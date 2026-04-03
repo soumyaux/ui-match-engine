@@ -378,6 +378,10 @@ async function runAudit() {
         const rect = el.getBoundingClientRect();
         // Skip off-screen or invisible elements
         if (rect.width < 5 || rect.height < 5) return;
+        // Skip hidden elements (display:none, visibility:hidden, opacity:0)
+        if (live.display === 'none' || live.visibility === 'hidden' || live.opacity === '0') return;
+        // Skip elements positioned way outside the viewport (off-screen tricks)
+        if (rect.right < 0 || rect.bottom < 0) return;
         const elName = getElementName(el);
         const errors = [];
         const role = design.role || 'leaf'; // text | container | leaf
@@ -806,12 +810,15 @@ async function runAudit() {
                 
                 if (visionRes.ok) {
                   const { analysis } = await visionRes.json();
-                  if (analysis.includes('|')) {
-                    const [name, fix] = analysis.split('|');
-                    elementLabel = name.replace('Name:', '').trim();
-                    aiFeedback = fix.replace('Fix:', '').trim();
-                  } else {
-                    aiFeedback = analysis;
+                  // Filter out failed AI responses
+                  if (analysis && !analysis.toLowerCase().includes('failed') && !analysis.toLowerCase().includes('error')) {
+                    if (analysis.includes('|')) {
+                      const [name, fix] = analysis.split('|');
+                      elementLabel = name.replace('Name:', '').trim();
+                      aiFeedback = fix.replace('Fix:', '').trim();
+                    } else {
+                      aiFeedback = analysis;
+                    }
                   }
                 }
               } catch (aiErr) {
@@ -964,16 +971,24 @@ async function runAudit() {
         }, issueChunk);
 
         const path = `playwright-report/screenshot-chunk-${i+1}.png`;
-        await page.screenshot({ path, fullPage: true });
+        // Crop screenshot to actual content bounds instead of full page to avoid whitespace
+        const contentBounds = await page.evaluate(() => {
+          const body = document.body;
+          const html = document.documentElement;
+          const height = Math.max(body.scrollHeight, body.offsetHeight, html.clientHeight, html.scrollHeight, html.offsetHeight);
+          const width = Math.max(body.scrollWidth, body.offsetWidth, html.clientWidth, html.scrollWidth, html.offsetWidth);
+          return { width: Math.min(width, 1440), height: Math.min(height, 4000) };
+        });
+        await page.screenshot({ path, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
         const buffer = fs.readFileSync(path);
         screenshotPaths.push(buffer.toString('base64'));
     }
 
     const screenshotHtmlChunks = screenshotPaths.map((base64, idx) => `
-      <div class="screenshot-section" style="padding:32px 48px;${idx > 0 ? 'page-break-before:always;' : ''}">
-        <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">📸 Audit View ${idx + 1} of ${maxScreenshots}</h2>
-        <div style="padding:12px;background:#fff;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,0.1);border:1px solid #e2e8f0;text-align:center;">
-          <img src="data:image/png;base64,${base64}" style="max-width:750px;width:100%;height:auto;display:inline-block;border-radius:8px;max-height:950px;object-fit:contain;" />
+      <div class="screenshot-section" style="padding:24px 32px;${idx > 0 ? 'page-break-before:always;' : ''}">
+        <h2 style="font-size:17px;color:#0f1b35;margin:0 0 12px;">📸 Audit View ${idx + 1} of ${maxScreenshots}</h2>
+        <div style="background:#fff;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;">
+          <img src="data:image/png;base64,${base64}" style="width:100%;height:auto;display:block;" />
         </div>
       </div>
     `).join('');
@@ -1023,7 +1038,6 @@ async function runAudit() {
     .screenshot-section:not(:first-of-type) { page-break-before: always; }
     .screenshot-section { page-break-inside: avoid; }
     .issue-card { break-inside: avoid; page-break-inside: avoid; }
-    img { max-height: 950px; object-fit: contain; }
   }
   .screenshot-section { page-break-inside: avoid; }
   .issue-card { break-inside: avoid; page-break-inside: avoid; }
