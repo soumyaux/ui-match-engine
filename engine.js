@@ -121,7 +121,7 @@ async function runAudit() {
           body: JSON.stringify({
             contents: [{
               parts: [
-                { text: 'Image 1 is a Figma design. Image 2 is a screenshot of a live website.\n\nAre these the SAME website/application? They should have similar layout structure, similar navigation, similar content sections.\n\nIMPORTANT: Minor differences in colors, fonts, images, and spacing are EXPECTED and should be IGNORED. Focus ONLY on whether the overall page structure and type of application is the same.\n\nExamples of MISMATCH: A to-do app design vs a portfolio site. A dashboard vs a blog.\nExamples of MATCH: Same page with slightly different styling. Same app with different images.\n\nIMPORTANT: If you are unsure, default to MATCH. ONLY reply MISMATCH if the two images are clearly completely different types of applications.\n\nReply with ONLY one word: "MATCH" or "MISMATCH".' },
+                { text: 'Image 1 is a Figma design. Image 2 is a screenshot of a live website.\n\nDo both images show the SAME CATEGORY of application? For example, are they both to-do apps, both portfolios, both dashboards, both blogs, both e-commerce sites?\n\nRULES:\n1. MATCH if both are the same CATEGORY of application, even if the layout, colors, content, or styling are completely different.\n2. MATCH if they look like different versions or themes of the same type of app.\n3. MISMATCH ONLY if they are fundamentally different categories (e.g., a to-do app vs a portfolio site, a dashboard vs a blog, an e-commerce site vs a calculator).\n4. When in doubt, ALWAYS reply MATCH. You should almost never say MISMATCH.\n\nReply with ONLY one word: MATCH or MISMATCH.' },
                 { inline_data: { mime_type: 'image/png', data: figmaB64 } },
                 { inline_data: { mime_type: 'image/jpeg', data: liveB64 } }
               ]
@@ -396,8 +396,19 @@ async function runAudit() {
         // Skip elements inside chart containers (common libraries)
         if (el.closest?.('[class*="chart"]') || el.closest?.('[class*="graph"]') || el.closest?.('[class*="recharts"]') || el.closest?.('[class*="highcharts"]') || el.closest?.('[class*="apexcharts"]')) return;
 
-        const live = window.getComputedStyle(el);
+        // Skip generic full-page wrapper divs that are just layout containers
+        // These are wrappers like div.size-full, div#root, div#app, div#__next
+        // They cover the entire viewport and have no meaningful design properties
         const rect = el.getBoundingClientRect();
+        if (tag === 'DIV') {
+          const cls = (el.className || '').toString().toLowerCase();
+          const elId = (el.id || '').toLowerCase();
+          const isFullPageWrapper = (rect.width >= window.innerWidth * 0.95 && rect.height >= window.innerHeight * 0.9);
+          const isKnownWrapper = cls.includes('size-full') || cls.includes('app') || cls.includes('root') || cls.includes('wrapper') || cls.includes('container') || cls.includes('layout') || elId === 'root' || elId === 'app' || elId === '__next' || elId === '__nuxt';
+          if (isFullPageWrapper || isKnownWrapper) return;
+        }
+
+        const live = window.getComputedStyle(el);
         // Skip off-screen or invisible elements
         if (rect.width < 5 || rect.height < 5) return;
         // Skip hidden elements (display:none, visibility:hidden, opacity:0)
@@ -1007,9 +1018,9 @@ async function runAudit() {
     }
 
     const screenshotHtmlChunks = screenshotPaths.map((base64, idx) => `
-      <div class="screenshot-section" style="padding:24px 32px;${idx > 0 ? 'page-break-before:always;' : ''}">
-        <h2 style="font-size:17px;color:#0f1b35;margin:0 0 12px;">📸 Audit View ${idx + 1} of ${maxScreenshots}</h2>
-        <div style="background:#fff;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;">
+      <div class="screenshot-section" style="page-break-before:always;padding:24px 32px;display:flex;flex-direction:column;align-items:center;">
+        <h2 style="font-size:17px;color:#0f1b35;margin:0 0 12px;width:100%;">📸 Audit View ${idx + 1} of ${maxScreenshots}</h2>
+        <div style="background:#fff;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;max-width:100%;">
           <img src="data:image/png;base64,${base64}" style="width:100%;height:auto;display:block;" />
         </div>
       </div>
