@@ -1020,7 +1020,8 @@ async function runAudit() {
     const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
   @media print {
-    .screenshot-section { page-break-before: always; page-break-inside: avoid; }
+    .screenshot-section:not(:first-of-type) { page-break-before: always; }
+    .screenshot-section { page-break-inside: avoid; }
     .issue-card { break-inside: avoid; page-break-inside: avoid; }
     img { max-height: 950px; object-fit: contain; }
   }
@@ -1028,7 +1029,7 @@ async function runAudit() {
   .issue-card { break-inside: avoid; page-break-inside: avoid; }
 </style>
 </head>
-<body style="margin:0;font-family:sans-serif;background:#f1f5f9;">
+<body style="margin:0;font-family:sans-serif;background:#ffffff;">
   <div style="background:linear-gradient(135deg,#0f5ec4 0%,#3da5ff 100%);padding:40px 48px;color:#fff;">
     <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;">
       <div style="font-size:28px;font-weight:800;letter-spacing:-0.5px;">UI Match</div>
