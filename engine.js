@@ -84,6 +84,115 @@ async function runAudit() {
       process.exit(1);
     }
 
+    // ══════════════════════════════════════════
+    // PHASE 0.5: LAYER 2 VISUAL PRE-CHECK
+    // Catches SPA edge cases that Layer 1 (CF Worker) can't detect
+    // Uses the REAL Playwright screenshot (JS fully rendered)
+    // ══════════════════════════════════════════
+    const precheckFigmaPath = process.env.FIGMA_IMAGE;
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    const scanId = process.env.SCAN_ID;
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (precheckFigmaPath && fs.existsSync(precheckFigmaPath) && geminiApiKey) {
+      try {
+        console.log('🔍 Running Layer 2 visual pre-check...');
+
+        // 1. Take a small screenshot of the fully rendered live page
+        const preCheckScreenshot = await page.screenshot({
+          clip: { x: 0, y: 0, width: Math.min(frameWidth, 800), height: Math.min(frameHeight, 800) },
+          type: 'jpeg',
+          quality: 60
+        });
+
+        // 2. Load Figma PNG from disk (already downloaded by GitHub Action)
+        const figmaPrecheckBuf = fs.readFileSync(precheckFigmaPath);
+
+        // 3. Convert both to base64
+        const liveB64 = preCheckScreenshot.toString('base64');
+        const figmaB64 = figmaPrecheckBuf.toString('base64');
+
+        // 4. Send BOTH real images to Gemini 2.5 Flash
+        const precheckGeminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
+        const precheckGeminiRes = await fetch(precheckGeminiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: 'Image 1 is a Figma design. Image 2 is a screenshot of a live website.\n\nAre these the SAME website/application? They should have similar layout structure, similar navigation, similar content sections.\n\nIMPORTANT: Minor differences in colors, fonts, images, and spacing are EXPECTED and should be IGNORED. Focus ONLY on whether the overall page structure and type of application is the same.\n\nExamples of MISMATCH: A to-do app design vs a portfolio site. A dashboard vs a blog.\nExamples of MATCH: Same page with slightly different styling. Same app with different images.\n\nIMPORTANT: If you are unsure, default to MATCH. ONLY reply MISMATCH if the two images are clearly completely different types of applications.\n\nReply with ONLY one word: "MATCH" or "MISMATCH".' },
+                { inline_data: { mime_type: 'image/png', data: figmaB64 } },
+                { inline_data: { mime_type: 'image/jpeg', data: liveB64 } }
+              ]
+            }],
+            generationConfig: { temperature: 0, maxOutputTokens: 150 }
+          })
+        });
+
+        if (precheckGeminiRes.ok) {
+          const precheckData = await precheckGeminiRes.json();
+          const precheckParts = precheckData.candidates?.[0]?.content?.parts || [];
+          let precheckText = '';
+          for (let i = precheckParts.length - 1; i >= 0; i--) {
+            if (precheckParts[i].text && precheckParts[i].text.trim().length > 0 && !precheckParts[i].thought) {
+              precheckText = precheckParts[i].text;
+              break;
+            }
+          }
+          if (!precheckText) {
+            for (let i = precheckParts.length - 1; i >= 0; i--) {
+              if (precheckParts[i].text && precheckParts[i].text.trim().length > 0) {
+                precheckText = precheckParts[i].text;
+                break;
+              }
+            }
+          }
+
+          const precheckResult = precheckText.trim().toUpperCase();
+          console.log(`🔍 Layer 2 pre-check result: ${precheckText.trim()}`);
+
+          if (precheckResult.startsWith('MIS') && !precheckResult.startsWith('MATCH')) {
+            console.log('❌ Layer 2 MISMATCH: Figma design does not match the live website.');
+
+            // Write error to Supabase and exit early (saves ~25 seconds)
+            if (scanId && supabaseUrl && supabaseKey) {
+              try {
+                await fetch(`${supabaseUrl}/rest/v1/scan_history?id=eq.${scanId}`, {
+                  method: 'PATCH',
+                  headers: {
+                    'apikey': supabaseKey,
+                    'Authorization': `Bearer ${supabaseKey}`,
+                    'Content-Type': 'application/json',
+                    'Prefer': 'return=minimal'
+                  },
+                  body: JSON.stringify({
+                    audit_status: 'failed',
+                    error_message: 'This Figma design does not match the live website. The layout structures are completely different. Please check the URL and try again.'
+                  })
+                });
+                console.log('📝 Scan status updated to failed in Supabase.');
+              } catch (dbErr) {
+                console.error('Failed to update Supabase:', dbErr.message);
+              }
+            }
+
+            fs.writeFileSync('playwright-report/error-log.txt', 'Design mismatch: Figma design does not match the live website.');
+            await browser.close();
+            process.exit(0); // Clean exit — not a crash, just an early stop
+          }
+        } else {
+          console.warn('⚠️ Layer 2 Gemini call failed, continuing with full audit...');
+        }
+
+        console.log('✅ Layer 2 pre-check passed — proceeding to full audit.');
+      } catch (preCheckErr) {
+        console.warn(`⚠️ Layer 2 pre-check error: ${preCheckErr.message}. Continuing with full audit...`);
+      }
+    } else {
+      console.log('⏭️ Skipping Layer 2 pre-check (no Figma image or Gemini key).');
+    }
+
     // ── FULL ENVIRONMENT NORMALIZATION ──
     console.log('⏳ Normalizing environment...');
     
