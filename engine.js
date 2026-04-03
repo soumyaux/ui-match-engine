@@ -126,100 +126,13 @@ async function runAudit() {
       document.head.appendChild(styles);
     });
 
-    // 4. Scroll to trigger lazy loading, then scroll back
-    await page.waitForTimeout(1500);
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    // 4. Scroll to trigger lazy loading, then scroll back (optimized timings)
     await page.waitForTimeout(500);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(300);
     await page.evaluate(() => window.scrollTo(0, 0));
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(500);
     console.log('✅ Environment normalized — fonts loaded, animations frozen, dynamic content hidden.');
-
-    // === NEW: HUMAN-EYE PRE-CHECK ===
-    console.log('👁️ Running Native Structural Pre-check...');
-    const figmaFile = process.env.FIGMA_IMAGE || 'figma-frame.png';
-    
-    if (fs.existsSync(figmaFile)) {
-      try {
-        const liveFullBuf = await page.screenshot({ fullPage: true });
-        const liveBase64 = liveFullBuf.toString('base64');
-        const figmaBuf = fs.readFileSync(figmaFile);
-        const figmaBase64 = figmaBuf.toString('base64');
-        
-        // Use native browser canvas to compare the top portion of the screen
-        const matchScore = await page.evaluate(async ({fBase, lBase}) => {
-            return new Promise((resolve, reject) => {
-                const imgF = new Image();
-                const imgL = new Image();
-                imgF.src = 'data:image/png;base64,' + fBase;
-                imgL.src = 'data:image/png;base64,' + lBase;
-                
-                let loaded = 0;
-                imgF.onload = () => { loaded++; if (loaded===2) compare(); };
-                imgL.onload = () => { loaded++; if (loaded===2) compare(); };
-                imgF.onerror = () => reject('Figma img load failed');
-                imgL.onerror = () => reject('Live img load failed');
-
-                function compare() {
-                    const w = Math.min(800, imgF.width, imgL.width);
-                    const h = Math.min(600, imgF.height, imgL.height);
-                    if (w <= 0 || h <= 0) return resolve(100);
-
-                    const canvasF = document.createElement('canvas');
-                    const canvasL = document.createElement('canvas');
-                    canvasF.width = w; canvasF.height = h;
-                    canvasL.width = w; canvasL.height = h;
-
-                    const ctxF = canvasF.getContext('2d', { willReadFrequently: true });
-                    const ctxL = canvasL.getContext('2d', { willReadFrequently: true });
-                    ctxF.drawImage(imgF, 0, 0, w, h);
-                    ctxL.drawImage(imgL, 0, 0, w, h);
-
-                    const dataF = ctxF.getImageData(0, 0, w, h).data;
-                    const dataL = ctxL.getImageData(0, 0, w, h).data;
-                    
-                    let diffPixels = 0;
-                    const maxLen = w * h * 4;
-                    for (let i = 0; i < maxLen; i += 4) {
-                        const rDiff = Math.abs(dataF[i] - dataL[i]);
-                        const gDiff = Math.abs(dataF[i+1] - dataL[i+1]);
-                        const bDiff = Math.abs(dataF[i+2] - dataL[i+2]);
-                        // Simple threshold for structural match: if pixel is drastically different
-                        if (rDiff + gDiff + bDiff > 100) {
-                            diffPixels++;
-                        }
-                    }
-                    const totalPixels = w * h;
-                    const score = 100 - ((diffPixels / totalPixels) * 100);
-                    resolve(score);
-                }
-            });
-        }, { fBase: figmaBase64, lBase: liveBase64 });
-        
-        console.log(`👁️ Native Pre-check Score: ${matchScore.toFixed(2)}%`);
-
-        if (matchScore < 40) {
-            console.error(`🚨 STRUCTURAL MISMATCH (Score: ${matchScore.toFixed(1)}%). The Live URL layout is drastically different from the Figma design.`);
-            console.error(`Please check if you provided the correct URL or if the page requires login.`);
-            fs.writeFileSync('playwright-report/error-log.txt', `Audit Aborted: Structural Mismatch (Score: ${matchScore.toFixed(1)}%). Live URL is drastically different from Figma design.`);
-            
-            // Render a failure PDF
-            const html = `<html><body style="font-family:sans-serif;padding:60px;text-align:center;background:#fff5f5;color:#c53030;">
-                <h1 style="font-size:40px;margin-bottom:10px;">🚨 Mismatch Detected</h1>
-                <p style="font-size:18px;">The Figma design and the Live URL are structurally too different (${matchScore.toFixed(1)}% match). Please check the URL.</p>
-            </body></html>`;
-            const errPage = await browser.newPage();
-            await errPage.setContent(html);
-            await errPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', printBackground: true });
-            await errPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
-            await errPage.close();
-            
-            throw new Error(`Audit Aborted: Structural Mismatch (Score: ${matchScore.toFixed(1)}%). Live URL is drastically different from Figma design.`);
-        }
-      } catch (e) {
-         if (e.message.includes("Abort")) throw e;
-         console.warn("⚠️ Native Pre-check skipped/failed: ", e.message);
-      }
-    }
 
     // ══════════════════════════════════════════
     // PHASE 1: TOKEN CSS VALIDATION
