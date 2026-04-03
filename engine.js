@@ -303,6 +303,20 @@ async function runAudit() {
         const name = design.name || 'unknown';
         // Skip tiny spacer/divider tokens that aren't meaningful UI components
         if ((design.w || 0) < 20 && (design.h || 0) < 20) return;
+
+        // Skip image/decorative Figma tokens from Missing Element detection
+        // These are visual fills (RECTANGLE with image, icons, illustrations) that
+        // often don't map 1:1 to a DOM element at exact pixel coordinates
+        const lowerName = name.toLowerCase();
+        const isImageOrDecor = lowerName.includes('image') || lowerName.includes('img') ||
+            lowerName.includes('photo') || lowerName.includes('icon') ||
+            lowerName.includes('illustration') || lowerName.includes('logo') ||
+            lowerName.includes('vector') || lowerName.includes('bitmap') ||
+            lowerName.includes('mask') || lowerName.includes('clip') ||
+            design.type === 'RECTANGLE' || design.type === 'ELLIPSE' ||
+            design.type === 'VECTOR' || design.type === 'BOOLEAN_OPERATION' ||
+            design.type === 'STAR' || design.type === 'LINE' ||
+            design.type === 'POLYGON';
         
         const cx = (design.x || 0) + (design.w || 0) / 2;
         const cy = (design.y || 0) + (design.h || 0) / 2;
@@ -313,12 +327,29 @@ async function runAudit() {
         if (checkedPositions.has(posKey)) return;
         checkedPositions.add(posKey);
         
-        const el = document.elementFromPoint(cx, cy);
+        // Multi-point probing: check center + 4 inner corners to avoid false negatives
+        // from responsive shifts where the center pixel misses the element
+        const probePoints = [
+          [cx, cy],
+          [(design.x || 0) + (design.w || 0) * 0.25, (design.y || 0) + (design.h || 0) * 0.25],
+          [(design.x || 0) + (design.w || 0) * 0.75, (design.y || 0) + (design.h || 0) * 0.25],
+          [(design.x || 0) + (design.w || 0) * 0.25, (design.y || 0) + (design.h || 0) * 0.75],
+          [(design.x || 0) + (design.w || 0) * 0.75, (design.y || 0) + (design.h || 0) * 0.75],
+        ];
+        let el = null;
+        for (const [px, py] of probePoints) {
+          const probe = document.elementFromPoint(px, py);
+          if (probe && probe !== document.body && probe !== document.documentElement) {
+            el = probe; break;
+          }
+        }
         
         // === MISSING ELEMENT: Figma has content here but live page has nothing ===
         if (!el || el === document.body || el === document.documentElement) {
+          // Skip image/decorative tokens — they cause false positives
+          if (isImageOrDecor) return;
           // Only report if the Figma token is large enough to be a real component (not a spacer)
-          if ((design.w || 0) > 30 && (design.h || 0) > 30) {
+          if ((design.w || 0) > 50 && (design.h || 0) > 50) {
             const missingKey = `missing_${Math.round(cx / 20)}_${Math.round(cy / 20)}`;
             if (!seenElements.has(missingKey)) {
               seenElements.set(missingKey, results.length);
@@ -939,10 +970,10 @@ async function runAudit() {
     }
 
     const screenshotHtmlChunks = screenshotPaths.map((base64, idx) => `
-      <div style="padding:32px 48px;">
+      <div class="screenshot-section" style="padding:32px 48px;${idx > 0 ? 'page-break-before:always;' : ''}">
         <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">📸 Audit View ${idx + 1} of ${maxScreenshots}</h2>
         <div style="padding:12px;background:#fff;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,0.1);border:1px solid #e2e8f0;text-align:center;">
-          <img src="data:image/png;base64,${base64}" style="max-width:750px;width:100%;height:auto;display:inline-block;border-radius:8px;" />
+          <img src="data:image/png;base64,${base64}" style="max-width:750px;width:100%;height:auto;display:inline-block;border-radius:8px;max-height:950px;object-fit:contain;" />
         </div>
       </div>
     `).join('');
@@ -976,7 +1007,7 @@ async function runAudit() {
         : `display:flex;flex-wrap:wrap;gap:8px;margin-top:2px;`;
 
       return `
-      <div style="display:flex;gap:12px;padding:14px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.1);border-left:4px solid ${color};">
+      <div class="issue-card" style="display:flex;gap:12px;padding:14px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.1);border-left:4px solid ${color};break-inside:avoid;page-break-inside:avoid;">
         <div style="min-width:28px;height:28px;background:${color};color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0;">${issue.issueNum}</div>
         <div style="flex:1;">
           <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:8px;line-height:1.2;">${issue.element}</div>
@@ -986,7 +1017,17 @@ async function runAudit() {
     }).join('');
 
     // 4. Build Final Output HTML
-    const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+  @media print {
+    .screenshot-section { page-break-before: always; page-break-inside: avoid; }
+    .issue-card { break-inside: avoid; page-break-inside: avoid; }
+    img { max-height: 950px; object-fit: contain; }
+  }
+  .screenshot-section { page-break-inside: avoid; }
+  .issue-card { break-inside: avoid; page-break-inside: avoid; }
+</style>
+</head>
 <body style="margin:0;font-family:sans-serif;background:#f1f5f9;">
   <div style="background:linear-gradient(135deg,#0f5ec4 0%,#3da5ff 100%);padding:40px 48px;color:#fff;">
     <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;">
@@ -1029,7 +1070,7 @@ async function runAudit() {
     // 5. Render final PDF report
     const reportPage = await browser.newPage();
     await reportPage.setContent(reportHtml, { waitUntil: 'load' });
-    await reportPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', format: 'A4', printBackground: true });
+    await reportPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', format: 'A4', printBackground: true, margin: { top: '24px', bottom: '24px', left: '24px', right: '24px' } });
     await reportPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
 
     await reportPage.close();
