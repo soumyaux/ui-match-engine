@@ -913,41 +913,23 @@ async function runAudit() {
         }, issueChunk);
 
         const path = `playwright-report/screenshot-chunk-${i+1}.png`;
-        // Crop screenshot tightly around clustered issues instead of full width/height
+        // Full width screenshot cropped vertically to the issues, as requested
         const contentBounds = await page.evaluate((chunk) => {
           const vw = window.innerWidth;
           const vh = window.innerHeight;
-          // If no issues, just use a sensible viewport chunk
-          if (!chunk || chunk.length === 0) return { x: 0, y: 0, width: Math.min(vw, 1440), height: Math.min(vh, 800) };
+          if (!chunk || chunk.length === 0) return { width: Math.min(vw, 1440), height: vh };
           
-          let minX = vw, minY = vh, maxX = 0, maxY = 0;
+          let maxY = 0;
           for (const issue of chunk) {
-            const ix = issue.rect?.x || 0;
-            const iy = issue.rect?.y || 0;
-            const iw = issue.rect?.w || 0;
-            const ih = issue.rect?.h || 0;
-            if (ix < minX) minX = ix;
-            if (iy < minY) minY = iy;
-            if (ix + iw > maxX) maxX = ix + iw;
-            if (iy + ih > maxY) maxY = iy + ih;
+            const bottom = (issue.rect?.y || 0) + (issue.rect?.h || 0) + 120; // 120px padding below last issue
+            if (bottom > maxY) maxY = bottom;
           }
           
-          // Add generous padding (80px) so context isn't lost
-          minX = Math.max(0, minX - 80);
-          minY = Math.max(0, minY - 80);
-          maxX = Math.min(vw, maxX + 80);
-          maxY = Math.min(4000, maxY + 80);
-          
-          // Enforce minimum dimensions so it's not a tiny slice
-          let w = maxX - minX;
-          let h = maxY - minY;
-          if (w < 400) { minX = Math.max(0, minX - (400-w)/2); w = 400; }
-          if (h < 300) { minY = Math.max(0, minY - (300-h)/2); h = 300; }
-          
-          return { x: minX, y: minY, width: w, height: h };
+          const cropHeight = Math.max(vh, maxY);
+          return { width: Math.min(vw, 1440), height: Math.min(cropHeight, 4000) };
         }, issueChunk);
         
-        await page.screenshot({ path, clip: contentBounds });
+        await page.screenshot({ path, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
         const buffer = fs.readFileSync(path);
         screenshotPaths.push(buffer.toString('base64'));
     }
@@ -1004,10 +986,8 @@ async function runAudit() {
 <style>
   @media print {
     .screenshot-section:not(:first-of-type) { page-break-before: always; }
-    .screenshot-section { page-break-inside: avoid; }
     .issue-card { break-inside: avoid; page-break-inside: avoid; }
   }
-  .screenshot-section { page-break-inside: avoid; }
   .issue-card { break-inside: avoid; page-break-inside: avoid; }
 </style>
 </head>
