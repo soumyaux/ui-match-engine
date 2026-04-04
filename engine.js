@@ -480,7 +480,7 @@ async function runAudit() {
               type: 'LAYOUT_SHIFT',
               element: elName,
               details: layoutErrors,
-              rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) }
+              rect: { x: Math.round(design.x || rect.left), y: Math.round(design.y || rect.top), w: Math.round(design.w || rect.width), h: Math.round(design.h || rect.height) }
             });
           }
           if (styleErrors.length > 0) {
@@ -490,7 +490,7 @@ async function runAudit() {
               type: 'MINOR_DIFF',
               element: elName,
               details: styleErrors,
-              rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) }
+              rect: { x: Math.round(design.x || rect.left), y: Math.round(design.y || rect.top), w: Math.round(design.w || rect.width), h: Math.round(design.h || rect.height) }
             });
           }
         } else {
@@ -827,24 +827,12 @@ async function runAudit() {
     // Throws a clean mismatch instead of generating a messy 0% PDF.
     if (trueMatchScore < 15) {
       console.log('❌ MATHEMATICAL MISMATCH: Final engine match score is less than 15%. This URL completely deviates from the Figma design.');
-      if (process.env.SCAN_ID && process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
-        try {
-          await fetch(`${process.env.SUPABASE_URL}/rest/v1/scan_history?id=eq.${process.env.SCAN_ID}`, {
-            method: 'PATCH',
-            headers: {
-              'apikey': process.env.SUPABASE_SERVICE_ROLE_KEY,
-              'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
-              'Content-Type': 'application/json',
-              'Prefer': 'return=minimal'
-            },
-            body: JSON.stringify({
-              audit_status: 'failed',
-              error_message: 'Layout Mismatch: The provided website structure completely deviates from the Figma design. Please check the URL and try again.'
-            })
-          });
-        } catch (e) {}
-      }
-      process.exit(0);
+      
+      // Write error log so the Github Action catches it and updates Supabase to 'failed' reliably
+      fs.writeFileSync('playwright-report/error-log.txt', 'Layout Mismatch: The provided website structure completely deviates from the Figma design. Please check the URL and try again.');
+      
+      // Exit with error code 1 so the Action drops into the 'failure()' block
+      process.exit(1);
     }
 
     // === DYNAMIC MULTI-SCREENSHOT LOGIC ===
@@ -925,14 +913,22 @@ async function runAudit() {
         }, issueChunk);
 
         const path = `playwright-report/screenshot-chunk-${i+1}.png`;
-        // Crop screenshot to actual content bounds instead of full page to avoid whitespace
-        const contentBounds = await page.evaluate(() => {
-          const body = document.body;
-          const html = document.documentElement;
-          const height = Math.max(body.scrollHeight, body.offsetHeight, html.clientHeight, html.scrollHeight, html.offsetHeight);
-          const width = Math.max(body.scrollWidth, body.offsetWidth, html.clientWidth, html.scrollWidth, html.offsetWidth);
-          return { width: Math.min(width, 1440), height: Math.min(height, 4000) };
-        });
+        // Crop screenshot tightly based on actual issue positions + viewport, not full page scroll
+        const contentBounds = await page.evaluate((chunk) => {
+          const vw = window.innerWidth;
+          const vh = window.innerHeight;
+          // If no issues, just use viewport
+          if (!chunk || chunk.length === 0) return { width: Math.min(vw, 1440), height: vh };
+          // Find the bounding box of all issues in this chunk
+          let maxY = 0;
+          for (const issue of chunk) {
+            const bottom = (issue.rect?.y || 0) + (issue.rect?.h || 0) + 60; // 60px padding below last issue
+            if (bottom > maxY) maxY = bottom;
+          }
+          // Use viewport height as minimum, but extend to cover all issues
+          const cropHeight = Math.max(vh, maxY);
+          return { width: Math.min(vw, 1440), height: Math.min(cropHeight, 4000) };
+        }, issueChunk);
         await page.screenshot({ path, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
         const buffer = fs.readFileSync(path);
         screenshotPaths.push(buffer.toString('base64'));
