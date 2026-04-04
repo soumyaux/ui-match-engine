@@ -118,18 +118,8 @@ async function runAudit() {
       }
     `});
 
-    // 3. Blackout images to focus on UI structure
-    await page.evaluate(() => {
-      const styles = document.createElement('style');
-      styles.innerHTML = `
-        img, picture, video, canvas, svg:not(.audit-svg), [style*="background-image"] {
-          filter: brightness(0) !important;
-          background: #000 !important;
-          color: transparent !important;
-        }
-      `;
-      document.head.appendChild(styles);
-    });
+    // 3. Images are left visible so the live screenshot shows real content
+    // (Previously blacked out with brightness(0) — removed to show real images in PDF)
 
     // 4. Scroll to trigger lazy loading, then scroll back (optimized timings)
     await page.waitForTimeout(500);
@@ -648,9 +638,36 @@ async function runAudit() {
 
         // Filter out tiny boxes (noise)
         const rawClusters = clusters.filter(c => c !== null && c.w > 15 && c.h > 15);
+
+        // === FILTER: Remove clusters centered on image/media elements ===
+        // Pixelmatch always flags images because Figma renders differ from live images.
+        // These are not real UI issues — skip them to prevent false positive highlights.
+        const nonImageClusters = await page.evaluate((boxes) => {
+          return boxes.filter(box => {
+            const cx = box.x + box.w / 2;
+            const cy = box.y + box.h / 2;
+            const el = document.elementFromPoint(cx, cy);
+            if (!el) return true;
+            const tag = el.tagName.toUpperCase();
+            // Skip boxes centered on images, videos, canvases, SVGs, or background-image elements
+            if (tag === 'IMG' || tag === 'VIDEO' || tag === 'CANVAS' || tag === 'PICTURE') return false;
+            if (tag === 'SVG' || el.closest?.('svg')) return false;
+            // Check if element or parent has a background-image
+            const style = window.getComputedStyle(el);
+            if (style.backgroundImage && style.backgroundImage !== 'none') return false;
+            // Check parent too (images are often wrapped in a container)
+            const parent = el.parentElement;
+            if (parent) {
+              const parentTag = parent.tagName.toUpperCase();
+              if (parentTag === 'PICTURE' || parentTag === 'FIGURE') return false;
+              if (parent.querySelector('img, video, canvas')) return false;
+            }
+            return true;
+          });
+        }, rawClusters);
         
-        // === NEW: COMPONENT-BASED REFINEMENT ===
-        // We take the raw pixel clusters and "snap" them to the nearest meaningful DOM component
+        // === COMPONENT-BASED REFINEMENT ===
+        // We take the filtered pixel clusters and "snap" them to the nearest meaningful DOM component
         // This prevents 1440px wide boxes by ensuring the box doesn't grow larger than its DOM container.
         const finalClusters = await page.evaluate(async (raw) => {
           return raw.map(box => {
@@ -677,7 +694,7 @@ async function runAudit() {
             }
             return box;
           });
-        }, rawClusters);
+        }, nonImageClusters);
         
         console.log(`📦 Grouped visual errors into ${finalClusters.length} component-based boxes.`);
 
@@ -913,23 +930,37 @@ async function runAudit() {
         }, issueChunk);
 
         const path = `playwright-report/screenshot-chunk-${i+1}.png`;
-        // Full width screenshot cropped vertically to the issues, as requested
+        // Tight vertical crop: only capture from top of first issue to bottom of last issue
+        // This prevents the massive white space in PDF when issues are clustered at the top
         const contentBounds = await page.evaluate((chunk) => {
           const vw = window.innerWidth;
           const vh = window.innerHeight;
-          if (!chunk || chunk.length === 0) return { width: Math.min(vw, 1440), height: vh };
+          const bodyHeight = document.body.scrollHeight;
+          if (!chunk || chunk.length === 0) return { x: 0, y: 0, width: Math.min(vw, 1440), height: vh };
           
+          let minY = Infinity;
           let maxY = 0;
           for (const issue of chunk) {
-            const bottom = (issue.rect?.y || 0) + (issue.rect?.h || 0) + 120; // 120px padding below last issue
+            const top = (issue.rect?.y || 0);
+            const bottom = top + (issue.rect?.h || 0);
+            if (top < minY) minY = top;
             if (bottom > maxY) maxY = bottom;
           }
           
-          const cropHeight = Math.max(vh, maxY);
-          return { width: Math.min(vw, 1440), height: Math.min(cropHeight, 4000) };
+          // Add padding: 60px above first issue, 80px below last issue
+          const cropY = Math.max(0, minY - 60);
+          const cropBottom = Math.min(bodyHeight, maxY + 80);
+          const cropHeight = cropBottom - cropY;
+          
+          return { 
+            x: 0, 
+            y: cropY, 
+            width: Math.min(vw, 1440), 
+            height: Math.min(Math.max(cropHeight, 200), 4000) 
+          };
         }, issueChunk);
         
-        await page.screenshot({ path, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
+        await page.screenshot({ path, clip: { x: contentBounds.x, y: contentBounds.y, width: contentBounds.width, height: contentBounds.height } });
         const buffer = fs.readFileSync(path);
         screenshotPaths.push(buffer.toString('base64'));
     }
