@@ -649,57 +649,84 @@ async function runAudit() {
         // Filter out tiny boxes (noise)
         const rawClusters = clusters.filter(c => c !== null && c.w > 15 && c.h > 15);
 
-        // === FILTER: Remove clusters centered on image/media elements ===
-        // Pixelmatch always flags images because Figma renders differ from live images.
-        // These are not real UI issues — skip them to prevent false positive highlights.
+        // === FILTER: Remove clusters that overlap image/media areas ===
+        // Check multiple probe points + child elements to catch image containers
         const nonImageClusters = await page.evaluate((boxes) => {
           return boxes.filter(box => {
+            // Probe 5 points across the box (center + 4 corners)
+            const probes = [
+              [box.x + box.w / 2, box.y + box.h / 2],
+              [box.x + box.w * 0.2, box.y + box.h * 0.2],
+              [box.x + box.w * 0.8, box.y + box.h * 0.2],
+              [box.x + box.w * 0.2, box.y + box.h * 0.8],
+              [box.x + box.w * 0.8, box.y + box.h * 0.8],
+            ];
+            let imageHits = 0;
+            for (const [px, py] of probes) {
+              const el = document.elementFromPoint(px, py);
+              if (!el) continue;
+              const tag = el.tagName.toUpperCase();
+              if (tag === 'IMG' || tag === 'VIDEO' || tag === 'CANVAS' || tag === 'PICTURE') imageHits++;
+              if (tag === 'SVG' || el.closest?.('svg')) imageHits++;
+              const style = window.getComputedStyle(el);
+              if (style.backgroundImage && style.backgroundImage !== 'none' && style.backgroundImage.includes('url(')) imageHits++;
+              if (el.closest?.('figure') || el.closest?.('[class*="image"]') || el.closest?.('[class*="Image"]')) imageHits++;
+            }
+            // If 2+ probe points hit image/media areas, skip this box
+            if (imageHits >= 2) return false;
+            
+            // Also check if the box area CONTAINS image elements
             const cx = box.x + box.w / 2;
             const cy = box.y + box.h / 2;
             const el = document.elementFromPoint(cx, cy);
-            if (!el) return true;
-            const tag = el.tagName.toUpperCase();
-            // Skip boxes centered on images, videos, canvases, SVGs, or background-image elements
-            if (tag === 'IMG' || tag === 'VIDEO' || tag === 'CANVAS' || tag === 'PICTURE') return false;
-            if (tag === 'SVG' || el.closest?.('svg')) return false;
-            // Check if element or parent has a background-image
-            const style = window.getComputedStyle(el);
-            if (style.backgroundImage && style.backgroundImage !== 'none') return false;
-            // Check parent too (images are often wrapped in a container)
-            const parent = el.parentElement;
-            if (parent) {
-              const parentTag = parent.tagName.toUpperCase();
-              if (parentTag === 'PICTURE' || parentTag === 'FIGURE') return false;
-              if (parent.querySelector('img, video, canvas')) return false;
+            if (el) {
+              const parent = el.closest('section, div, article, main') || el.parentElement;
+              if (parent) {
+                const imgs = parent.querySelectorAll('img, video, canvas, picture');
+                const parentRect = parent.getBoundingClientRect();
+                // If container has images and the box covers most of it, it's an image section
+                if (imgs.length > 0 && parentRect.width > 0) {
+                  const overlapW = Math.min(box.x + box.w, parentRect.right) - Math.max(box.x, parentRect.left);
+                  const overlapH = Math.min(box.y + box.h, parentRect.bottom) - Math.max(box.y, parentRect.top);
+                  if (overlapW > 0 && overlapH > 0) {
+                    const overlapArea = overlapW * overlapH;
+                    const boxArea = box.w * box.h;
+                    if (boxArea > 0 && overlapArea / boxArea > 0.4) return false;
+                  }
+                }
+              }
             }
             return true;
           });
         }, rawClusters);
         
         // === COMPONENT-BASED REFINEMENT ===
-        // We take the filtered pixel clusters and "snap" them to the nearest meaningful DOM component
-        // This prevents 1440px wide boxes by ensuring the box doesn't grow larger than its DOM container.
+        // Snap clusters to nearest DOM component, but don't let the box grow too large
         const finalClusters = await page.evaluate(async (raw) => {
-          return raw.map(box => {
+          return raw.filter(box => {
+            // Cap: skip boxes larger than 50% viewport width or 400px tall
+            if (box.w > window.innerWidth * 0.5 || box.h > 400) return false;
+            return true;
+          }).map(box => {
             const cx = box.x + box.w / 2;
             const cy = box.y + box.h / 2;
             const el = document.elementFromPoint(cx, cy);
             if (!el || el === document.body || el === document.documentElement) return box;
             
-            // Find the nearest semantic or meaningful container
+            // Find the nearest meaningful container
             let container = el;
             const stopTags = ['DIV', 'SECTION', 'ARTICLE', 'ASIDE', 'NAV', 'HEADER', 'FOOTER', 'MAIN'];
             while (container && container.parentElement && !stopTags.includes(container.tagName)) {
-               // Don't let the box grow too large (cap at 80% screen width to prevent 1440px issue)
-               if (container.offsetWidth > window.innerWidth * 0.8) break;
+               if (container.offsetWidth > window.innerWidth * 0.5) break;
                container = container.parentElement;
             }
             
             if (!container) return box;
             const r = container.getBoundingClientRect();
             
-            // If the DOM container is reasonably sized, use its bounds instead of raw pixel cluster
-            if (r.width > 10 && r.height > 10 && r.width < window.innerWidth * 0.9) {
+            // Only snap if the container isn't much bigger than the original cluster (max 2x)
+            if (r.width > 10 && r.height > 10 && r.width < window.innerWidth * 0.5 &&
+                r.width <= box.w * 2.5 && r.height <= box.h * 2.5) {
               return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
             }
             return box;
@@ -978,24 +1005,15 @@ async function runAudit() {
         screenshotPaths.push(buffer.toString('base64'));
     }
 
-    const screenshotHtmlChunks = screenshotPaths.map((base64, idx) => `
-      <div style="padding:16px 24px;">
-        <h2 style="font-size:15px;color:#0f1b35;margin:0 0 10px;">📸 Audit View ${idx + 1} of ${maxScreenshots}</h2>
-        <div style="border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;">
-          <img src="data:image/png;base64,${base64}" style="width:100%;height:auto;display:block;object-fit:contain;" />
-        </div>
-      </div>
-    `).join('');
-
     const auditDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
-    // 3. Build Issue HTML List
+    // 3. Build paired Audit View + Issue blocks
     const palette = ['#3B82F6', '#EC4899', '#F97316', '#10B981', '#8B5CF6', '#EF4444', '#14B8A6'];
-    const issueRows = allIssues.map((issue) => {
+    
+    function buildIssueCard(issue) {
       const color = palette[(issue.issueNum - 1) % palette.length];
       const detailRows = issue.details.map(d => {
         const parts = d.split(':');
-        // Handle legacy formatted strings or our new simple hints
         if (parts.length >= 2) {
           const key = parts[0].trim();
           const val = parts.slice(1).join(':').trim();
@@ -1004,14 +1022,11 @@ async function runAudit() {
             <span style="text-align:right;background:#f8fafc;padding:4px 8px;border-radius:6px;border:1px solid #e2e8f0;font-family:monospace;letter-spacing:-0.2px;">${val}</span>
           </div>`;
         }
-        // New compact inline tag style for simple hints
-        // We use a light, subtle background based on an alpha version of the primary color or a neutral tone
         return `<span style="display:inline-block;background:#f8fafc;border:1px solid #e2e8f0;padding:4px 10px;border-radius:12px;font-size:13px;color:#334155;font-weight:500;">${d}</span>`;
       }).join('');
       
-      // If we have legacy rows, we wrap them normally, but for our inline tags we use a flex gap layout
       const hasLegacyRows = issue.details.some(d => d.includes(':'));
-      const detailsContainerStyle = hasLegacyRows 
+      const detailsStyle = hasLegacyRows 
         ? `display:flex;flex-direction:column;`
         : `display:flex;flex-wrap:wrap;gap:8px;margin-top:2px;`;
 
@@ -1020,8 +1035,28 @@ async function runAudit() {
         <div style="min-width:28px;height:28px;background:${color};color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0;">${issue.issueNum}</div>
         <div style="flex:1;">
           <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:8px;line-height:1.2;">${issue.element}</div>
-          <div style="${detailsContainerStyle}">${detailRows}</div>
+          <div style="${detailsStyle}">${detailRows}</div>
         </div>
+      </div>`;
+    }
+
+    // Build each section: Screenshot → Its Issues
+    const auditSections = screenshotPaths.map((base64, idx) => {
+      const chunkStart = idx * issuesPerScreen;
+      const chunkEnd = idx === maxScreenshots - 1 ? allIssues.length : chunkStart + issuesPerScreen;
+      const chunkIssues = allIssues.slice(chunkStart, chunkEnd);
+      const issueCards = chunkIssues.map(buildIssueCard).join('');
+      
+      return `
+      <div style="padding:16px 24px 8px;">
+        <h2 style="font-size:15px;color:#0f1b35;margin:0 0 10px;">📸 Audit View ${idx + 1} of ${maxScreenshots} <span style="font-size:12px;color:#64748b;font-weight:400;">— ${chunkIssues.length} issue${chunkIssues.length !== 1 ? 's' : ''}</span></h2>
+        <div style="border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;">
+          <img src="data:image/png;base64,${base64}" style="width:100%;height:auto;display:block;object-fit:contain;" />
+        </div>
+      </div>
+      <div style="padding:8px 24px 16px;">
+        <h3 style="font-size:13px;color:#64748b;margin:0 0 10px;font-weight:600;">Issues ${chunkIssues.length > 0 ? chunkIssues[0].issueNum + '–' + chunkIssues[chunkIssues.length-1].issueNum : ''} · Figma Frame: ${frameName}</h3>
+        ${issueCards || '<p style="color:#10b981;font-size:14px;">✅ No issues in this view</p>'}
       </div>`;
     }).join('');
 
@@ -1046,7 +1081,7 @@ async function runAudit() {
         <div style="white-space:nowrap;">📅 <strong>Date:</strong> ${auditDate}</div>
       </div>
 
-      <div>📐 <strong>Viewport:</strong> 1440&times;900px</div>
+      <div>📐 <strong>Viewport:</strong> ${frameWidth}&times;${frameHeight}px</div>
     </div>
     <div style="display:flex;gap:16px;margin-top:24px;">
       <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
@@ -1063,13 +1098,7 @@ async function runAudit() {
       </div>
     </div>
   </div>
-  ${screenshotHtmlChunks}
-
-  <div style="padding:16px 24px 32px;">
-    <h2 style="font-size:17px;color:#0f1b35;margin:0 0 4px;">🔍 Issue Log</h2>
-    <p style="font-size:12px;color:#64748b;margin:0 0 16px;">Figma Frame: ${frameName}</p>
-    ${issueRows || '<p>✅ Perfect Match!</p>'}
-  </div>
+  ${auditSections}
 </body></html>`;
 
     // 5. Render final PDF report
