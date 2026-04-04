@@ -736,44 +736,67 @@ async function runAudit() {
           });
         }, nonImageClusters);
         
-        console.log(`📦 Grouped visual errors into ${finalClusters.length} component-based boxes.`);
-
-        // Identify DOM element names for fallback
-        const boxNames = await page.evaluate((boxes) => {
-          return boxes.map(box => {
-            const cx = box.x + box.w / 2;
-            const cy = box.y + box.h / 2;
-            const el = document.elementFromPoint(cx, cy);
-            if (!el) return 'Unknown Element';
-            if (el.tagName === 'IMG') return el.alt || 'Image';
-            if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') return el.textContent?.trim().substring(0, 30) || 'Button';
-            if (el.tagName === 'A') return 'Link: ' + (el.textContent?.trim().substring(0, 25) || el.href?.substring(0, 30) || 'Link');
-            if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return el.placeholder || el.name || 'Input Field';
-            if (el.tagName === 'NAV') return 'Navigation Bar';
-            if (el.tagName === 'HEADER') return 'Header Section';
-            if (el.tagName === 'FOOTER') return 'Footer Section';
-            if (el.tagName === 'H1' || el.tagName === 'H2' || el.tagName === 'H3') return 'Heading: ' + (el.textContent?.trim().substring(0, 30) || el.tagName);
-            if (el.tagName === 'P') return 'Text Block';
-            if (el.tagName === 'SVG' || el.closest('svg')) return 'Icon / SVG';
-            if (el.tagName === 'VIDEO') return 'Video Player';
-            if (el.id) return el.tagName.toLowerCase() + '#' + el.id;
-            if (el.className && typeof el.className === 'string') {
-              const cls = el.className.split(' ').filter(c => c.length > 0 && c.length < 30)[0];
-              if (cls) return el.tagName.toLowerCase() + '.' + cls;
+        // === MATCH FROM FIGMA TO LIVE: IoU-based filtering ===
+        // For each visual cluster, find the best-overlapping LEAF Figma token.
+        // Only keep clusters that genuinely correspond to a Figma element.
+        // Use the Figma token name as the issue label (not DOM names like "div.flex").
+        const figmaMatchedClusters = [];
+        const figmaMatchedNames = [];
+        
+        for (const box of finalClusters) {
+          let bestToken = null;
+          let bestIoU = 0;
+          
+          for (const token of designTokens) {
+            // Skip container tokens — they cover entire sections and match everything
+            if (token.role === 'container') continue;
+            // Skip tiny spacers
+            if ((token.w || 0) < 15 && (token.h || 0) < 15) continue;
+            
+            const tx = token.x || 0, ty = token.y || 0;
+            const tw = token.w || 0, th = token.h || 0;
+            
+            // Calculate intersection
+            const ix1 = Math.max(box.x, tx);
+            const iy1 = Math.max(box.y, ty);
+            const ix2 = Math.min(box.x + box.w, tx + tw);
+            const iy2 = Math.min(box.y + box.h, ty + th);
+            
+            if (ix2 <= ix1 || iy2 <= iy1) continue; // No intersection
+            
+            const interArea = (ix2 - ix1) * (iy2 - iy1);
+            const boxArea = box.w * box.h;
+            const tokenArea = tw * th;
+            const unionArea = boxArea + tokenArea - interArea;
+            
+            if (unionArea <= 0) continue;
+            const iou = interArea / unionArea;
+            
+            if (iou > bestIoU) {
+              bestIoU = iou;
+              bestToken = token;
             }
-            const text = el.textContent?.trim().substring(0, 30);
-            if (text && text.length > 2) return text;
-            return el.tagName.toLowerCase() + ' element';
-          });
-        }, finalClusters);
+          }
+          
+          // Require meaningful overlap (IoU > 0.08) to consider it a real match
+          if (bestToken && bestIoU > 0.08) {
+            figmaMatchedClusters.push(box);
+            // Use the Figma layer name (last path segment)
+            const rawName = bestToken.name || 'unknown';
+            const cleanName = rawName.split('/').pop().trim();
+            figmaMatchedNames.push(cleanName !== 'unknown' ? cleanName : 'Component');
+          }
+        }
+
+        console.log(`📦 Matched ${figmaMatchedClusters.length} visual clusters to Figma tokens (from ${finalClusters.length} candidates).`);
 
         // --- SMART BOX ANALYSIS: identify DOM element + classify error type ---
         // AND call Gemini 3.1 Flash AI Vision for smart naming/fixes
-        console.log('🤖 Calling Gemini 3.1 Flash-Lite for smart vision analysis...');
+        console.log('🤖 Calling AI Vision for smart visual analysis...');
         
-        for (let i = 0; i < finalClusters.length; i++) {
-            const box = finalClusters[i];
-            let elementLabel = boxNames[i];
+        for (let i = 0; i < figmaMatchedClusters.length; i++) {
+            const box = figmaMatchedClusters[i];
+            let elementLabel = figmaMatchedNames[i];
             let aiFeedback = "Visual difference detected.";
 
             // 1. Capture AI-Vision Crop (Limit to first 5 for speed/free tier)
