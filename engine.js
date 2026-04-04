@@ -114,7 +114,7 @@ async function runAudit() {
         const figmaB64 = figmaPrecheckBuf.toString('base64');
 
         // 4. Send BOTH real images to Gemini 2.5 Flash
-        const precheckGeminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
+        const precheckGeminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`;
         const precheckGeminiRes = await fetch(precheckGeminiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
