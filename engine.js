@@ -913,29 +913,47 @@ async function runAudit() {
         }, issueChunk);
 
         const path = `playwright-report/screenshot-chunk-${i+1}.png`;
-        // Crop screenshot tightly based on actual issue positions + viewport, not full page scroll
+        // Crop screenshot tightly around clustered issues instead of full width/height
         const contentBounds = await page.evaluate((chunk) => {
           const vw = window.innerWidth;
           const vh = window.innerHeight;
-          // If no issues, just use viewport
-          if (!chunk || chunk.length === 0) return { width: Math.min(vw, 1440), height: vh };
-          // Find the bounding box of all issues in this chunk
-          let maxY = 0;
+          // If no issues, just use a sensible viewport chunk
+          if (!chunk || chunk.length === 0) return { x: 0, y: 0, width: Math.min(vw, 1440), height: Math.min(vh, 800) };
+          
+          let minX = vw, minY = vh, maxX = 0, maxY = 0;
           for (const issue of chunk) {
-            const bottom = (issue.rect?.y || 0) + (issue.rect?.h || 0) + 60; // 60px padding below last issue
-            if (bottom > maxY) maxY = bottom;
+            const ix = issue.rect?.x || 0;
+            const iy = issue.rect?.y || 0;
+            const iw = issue.rect?.w || 0;
+            const ih = issue.rect?.h || 0;
+            if (ix < minX) minX = ix;
+            if (iy < minY) minY = iy;
+            if (ix + iw > maxX) maxX = ix + iw;
+            if (iy + ih > maxY) maxY = iy + ih;
           }
-          // Use viewport height as minimum, but extend to cover all issues
-          const cropHeight = Math.max(vh, maxY);
-          return { width: Math.min(vw, 1440), height: Math.min(cropHeight, 4000) };
+          
+          // Add generous padding (80px) so context isn't lost
+          minX = Math.max(0, minX - 80);
+          minY = Math.max(0, minY - 80);
+          maxX = Math.min(vw, maxX + 80);
+          maxY = Math.min(4000, maxY + 80);
+          
+          // Enforce minimum dimensions so it's not a tiny slice
+          let w = maxX - minX;
+          let h = maxY - minY;
+          if (w < 400) { minX = Math.max(0, minX - (400-w)/2); w = 400; }
+          if (h < 300) { minY = Math.max(0, minY - (300-h)/2); h = 300; }
+          
+          return { x: minX, y: minY, width: w, height: h };
         }, issueChunk);
-        await page.screenshot({ path, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
+        
+        await page.screenshot({ path, clip: contentBounds });
         const buffer = fs.readFileSync(path);
         screenshotPaths.push(buffer.toString('base64'));
     }
 
     const screenshotHtmlChunks = screenshotPaths.map((base64, idx) => `
-      <div class="screenshot-section" style="page-break-before:always;padding:24px 32px;display:flex;flex-direction:column;align-items:center;">
+      <div class="screenshot-section" style="padding:24px 32px;display:flex;flex-direction:column;align-items:center;">
         <h2 style="font-size:17px;color:#0f1b35;margin:0 0 12px;width:100%;">📸 Audit View ${idx + 1} of ${maxScreenshots}</h2>
         <div style="background:#fff;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;max-width:100%;">
           <img src="data:image/png;base64,${base64}" style="width:100%;height:auto;display:block;" />
