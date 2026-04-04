@@ -268,11 +268,16 @@ async function runAudit() {
         }
         
         // === SKIP IRRELEVANT ELEMENTS ===
-        // Skip SVG graphs, charts, canvas, iframes, video — these are dynamic content not relevant to UI audit
+        // Skip media/image/chart elements — these are dynamic content that always differs from Figma
         const tag = el.tagName.toUpperCase();
-        if (tag === 'CANVAS' || tag === 'IFRAME' || tag === 'VIDEO' || tag === 'AUDIO') return;
-        if (tag === 'SVG' || el.closest?.('svg')) return; // Skip SVG icons and graphs
-        if (el.closest?.('canvas') || el.closest?.('iframe')) return;
+        if (tag === 'IMG' || tag === 'PICTURE' || tag === 'CANVAS' || tag === 'IFRAME' || tag === 'VIDEO' || tag === 'AUDIO') return;
+        if (tag === 'SVG' || el.closest?.('svg')) return;
+        if (el.closest?.('canvas') || el.closest?.('iframe') || el.closest?.('picture')) return;
+        // Skip elements with background-image (hero banners, card thumbnails, etc.)
+        const computedBg = window.getComputedStyle(el).backgroundImage;
+        if (computedBg && computedBg !== 'none' && computedBg.includes('url(')) return;
+        // Skip elements inside image/media containers
+        if (el.closest?.('figure') || el.closest?.('[class*="image"]') || el.closest?.('[class*="Image"]')) return;
         // Skip elements inside chart containers (common libraries)
         if (el.closest?.('[class*="chart"]') || el.closest?.('[class*="graph"]') || el.closest?.('[class*="recharts"]') || el.closest?.('[class*="highcharts"]') || el.closest?.('[class*="apexcharts"]')) return;
 
@@ -950,17 +955,22 @@ async function runAudit() {
         const contentBounds = await page.evaluate((chunk) => {
           const vw = window.innerWidth;
           const vh = window.innerHeight;
-          if (!chunk || chunk.length === 0) return { width: Math.min(vw, 1440), height: vh };
+          const sw = document.body.scrollWidth || vw;
+          if (!chunk || chunk.length === 0) return { width: Math.max(vw, sw), height: vh };
           
           let maxY = 0;
+          let maxX = 0;
           for (const issue of chunk) {
             const bottom = (issue.rect?.y || 0) + (issue.rect?.h || 0) + 80;
+            const right = (issue.rect?.x || 0) + (issue.rect?.w || 0) + 40;
             if (bottom > maxY) maxY = bottom;
+            if (right > maxX) maxX = right;
           }
           
-          // Always start from y=0 (top of page), extend to cover all issues
+          // Use full scrollable width to prevent content clipping
+          const cropWidth = Math.max(vw, sw, maxX);
           const cropHeight = Math.max(vh, maxY);
-          return { width: Math.min(vw, 1440), height: Math.min(cropHeight, 5000) };
+          return { width: Math.min(cropWidth, 3000), height: Math.min(cropHeight, 5000) };
         }, issueChunk);
         
         await page.screenshot({ path, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
@@ -971,8 +981,8 @@ async function runAudit() {
     const screenshotHtmlChunks = screenshotPaths.map((base64, idx) => `
       <div style="padding:16px 24px;">
         <h2 style="font-size:15px;color:#0f1b35;margin:0 0 10px;">📸 Audit View ${idx + 1} of ${maxScreenshots}</h2>
-        <div style="background:#f8fafc;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;display:flex;justify-content:center;align-items:center;">
-          <img src="data:image/png;base64,${base64}" style="max-width:100%;height:auto;display:block;" />
+        <div style="border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;">
+          <img src="data:image/png;base64,${base64}" style="width:100%;height:auto;display:block;object-fit:contain;" />
         </div>
       </div>
     `).join('');
@@ -1055,8 +1065,9 @@ async function runAudit() {
   </div>
   ${screenshotHtmlChunks}
 
-  <div style="padding:0 48px 48px;">
-    <h2 style="font-size:17px;color:#0f1b35;margin:0 0 16px;">🔍 Issue Log</h2>
+  <div style="padding:16px 24px 32px;">
+    <h2 style="font-size:17px;color:#0f1b35;margin:0 0 4px;">🔍 Issue Log</h2>
+    <p style="font-size:12px;color:#64748b;margin:0 0 16px;">Figma Frame: ${frameName}</p>
     ${issueRows || '<p>✅ Perfect Match!</p>'}
   </div>
 </body></html>`;
