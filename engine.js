@@ -300,7 +300,10 @@ async function runAudit() {
         if (live.display === 'none' || live.visibility === 'hidden' || live.opacity === '0') return;
         // Skip elements positioned way outside the viewport (off-screen tricks)
         if (rect.right < 0 || rect.bottom < 0) return;
-        const elName = getElementName(el);
+        // Use Figma layer name for issue titles — much more useful for designers
+        // Clean it: take last segment of path (e.g., "Frame / Section / Button" → "Button")
+        const figmaName = name && name !== 'unknown' ? name.split('/').pop().trim() : null;
+        const elName = figmaName || getElementName(el);
         const errors = [];
         const role = design.role || 'leaf'; // text | container | leaf
         
