@@ -84,10 +84,6 @@ async function runAudit() {
       process.exit(1);
     }
 
-    const scanId = process.env.SCAN_ID;
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
 
     // ── FULL ENVIRONMENT NORMALIZATION ──
     console.log('⏳ Normalizing environment...');
@@ -118,8 +114,6 @@ async function runAudit() {
       }
     `});
 
-    // 3. Images are kept visible initially — blackout is applied later only for pixelmatch comparison
-    // and removed before taking PDF screenshots so the report shows real images
 
     // 4. Scroll to trigger lazy loading, then scroll back (optimized timings)
     await page.waitForTimeout(500);
@@ -495,8 +489,8 @@ async function runAudit() {
     // ══════════════════════════════════════════
     console.log('📸 Taking live screenshot...');
     
-    // Apply image blackout ONLY for pixelmatch comparison (prevents false mismatches from image content)
-    const blackoutStyleHandle = await page.addStyleTag({ content: `
+    // Apply image blackout for pixelmatch comparison (prevents false mismatches from image content)
+    await page.addStyleTag({ content: `
       img, picture, video, canvas, svg:not(.audit-svg), [style*="background-image"] {
         filter: brightness(0) !important;
         background: #000 !important;
@@ -956,7 +950,6 @@ async function runAudit() {
         const contentBounds = await page.evaluate((chunk) => {
           const vw = window.innerWidth;
           const vh = window.innerHeight;
-          const bodyHeight = document.body.scrollHeight;
           if (!chunk || chunk.length === 0) return { width: Math.min(vw, 1440), height: vh };
           
           let maxY = 0;
@@ -976,10 +969,10 @@ async function runAudit() {
     }
 
     const screenshotHtmlChunks = screenshotPaths.map((base64, idx) => `
-      <div class="screenshot-section" style="padding:16px 24px;display:flex;flex-direction:column;align-items:center;">
-        <h2 style="font-size:15px;color:#0f1b35;margin:0 0 10px;width:100%;">📸 Audit View ${idx + 1} of ${maxScreenshots}</h2>
-        <div style="background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;width:100%;">
-          <img src="data:image/png;base64,${base64}" style="width:100%;height:auto;display:block;" />
+      <div style="padding:16px 24px;">
+        <h2 style="font-size:15px;color:#0f1b35;margin:0 0 10px;">📸 Audit View ${idx + 1} of ${maxScreenshots}</h2>
+        <div style="background:#f8fafc;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;display:flex;justify-content:center;align-items:center;">
+          <img src="data:image/png;base64,${base64}" style="max-width:100%;height:auto;display:block;" />
         </div>
       </div>
     `).join('');
@@ -1025,15 +1018,13 @@ async function runAudit() {
     // 4. Build Final Output HTML
     const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
-  @media print {
-    .issue-card { break-inside: avoid; page-break-inside: avoid; }
-  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
   .issue-card { break-inside: avoid; page-break-inside: avoid; }
 </style>
 </head>
 <body style="margin:0;font-family:sans-serif;background:#ffffff;">
-  <div style="background:linear-gradient(135deg,#0f5ec4 0%,#3da5ff 100%);padding:28px 32px;color:#fff;">
-    <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;">
+  <div style="background:linear-gradient(135deg,#0f5ec4 0%,#3da5ff 100%);padding:24px 24px 20px;color:#fff;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
       <div style="font-size:28px;font-weight:800;letter-spacing:-0.5px;">UI Match</div>
       <div style="font-size:13px;opacity:0.7;border-left:2px solid rgba(255,255,255,0.3);padding-left:16px;">Visual Audit Report</div>
     </div>
