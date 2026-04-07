@@ -1212,29 +1212,34 @@ async function runAudit() {
     
     function buildIssueCard(issue) {
       const color = ISSUE_PALETTE[(issue.issueNum - 1) % ISSUE_PALETTE.length];
+      const r = parseInt(color.slice(1, 3), 16);
+      const g = parseInt(color.slice(3, 5), 16);
+      const b = parseInt(color.slice(5, 7), 16);
+      
       const detailRows = issue.details.map(d => {
         const parts = d.split(':');
         if (parts.length >= 2) {
           const key = parts[0].trim();
           const val = parts.slice(1).join(':').trim();
-          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#475569;width:100%;">
+          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#f8fafc;border-radius:10px;margin-bottom:6px;font-size:13px;color:#475569;width:100%;border:1px solid #e2e8f0;">
             <span style="font-weight:600;color:#0f1b35;">${key}</span>
-            <span style="text-align:right;background:#f8fafc;padding:4px 8px;border-radius:6px;border:1px solid #e2e8f0;font-family:monospace;letter-spacing:-0.2px;">${val}</span>
+            <span style="text-align:right;background:#ffffff;padding:4px 8px;border-radius:6px;border:1px solid #e2e8f0;font-family:monospace;letter-spacing:-0.2px;box-shadow:0 1px 2px rgba(0,0,0,0.02);color:#334155;">${val}</span>
           </div>`;
         }
-        return `<span style="display:inline-block;background:#f8fafc;border:1px solid #e2e8f0;padding:4px 10px;border-radius:12px;font-size:13px;color:#334155;font-weight:500;">${d}</span>`;
+        return `<span style="display:inline-flex;align-items:center;background:#f8fafc;border:1px solid #e2e8f0;padding:6px 14px;border-radius:20px;font-size:12.5px;color:#475569;font-weight:500;letter-spacing:-0.1px;box-shadow:0 1px 2px rgba(0,0,0,0.02);">${d}</span>`;
       }).join('');
       
       const hasLegacyRows = issue.details.some(d => d.includes(':'));
       const detailsStyle = hasLegacyRows 
-        ? `display:flex;flex-direction:column;`
-        : `display:flex;flex-wrap:wrap;gap:8px;margin-top:2px;`;
+        ? `display:flex;flex-direction:column;gap:4px;margin-top:10px;`
+        : `display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;`;
 
       return `
-      <div class="issue-card" style="display:flex;gap:12px;padding:14px;margin:0 0 10px;background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.1);border-left:4px solid ${color};break-inside:avoid;page-break-inside:avoid;">
-        <div style="min-width:28px;height:28px;background:${color};color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0;">${issue.issueNum}</div>
+      <div class="issue-card" style="position:relative;overflow:hidden;display:flex;gap:16px;padding:20px 24px;margin:0 0 16px;background:#fff;border-radius:16px;box-shadow:0 4px 20px -4px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.02);border:1px solid #f1f5f9;break-inside:avoid;page-break-inside:avoid;">
+        <div style="position:absolute;top:0;left:0;width:4px;height:100%;background:${color};"></div>
+        <div style="min-width:34px;height:34px;background:rgba(${r},${g},${b},0.12);color:${color};border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">${issue.issueNum}</div>
         <div style="flex:1;">
-          <div style="font-weight:700;font-size:15px;color:#0f1b35;margin-bottom:8px;line-height:1.2;">${issue.element}</div>
+          <div style="font-weight:700;font-size:16px;color:#0f1b35;line-height:1.2;letter-spacing:-0.2px;">${issue.element}</div>
           <div style="${detailsStyle}">${detailRows}</div>
         </div>
       </div>`;
@@ -1249,14 +1254,21 @@ async function runAudit() {
       
       return `
       <div style="padding:16px 24px 8px;">
-        <h2 style="font-size:15px;color:#0f1b35;margin:0 0 10px;">📸 Audit View ${idx + 1} of ${maxScreenshots} <span style="font-size:12px;color:#64748b;font-weight:400;">— ${chunkIssues.length} issue${chunkIssues.length !== 1 ? 's' : ''}</span></h2>
-        <div style="border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;">
+        <h2 style="font-size:15px;color:#0f1b35;margin:0 0 16px;font-weight:700;display:flex;align-items:center;gap:8px;">
+          📸 Audit View ${idx + 1} of ${maxScreenshots} 
+          <span style="background:#f1f5f9;padding:4px 10px;border-radius:20px;font-size:12px;color:#475569;font-weight:500;">${chunkIssues.length} issue${chunkIssues.length !== 1 ? 's' : ''}</span>
+        </h2>
+        <div style="border-radius:12px;box-shadow:0 4px 24px -4px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;">
           <img src="data:image/png;base64,${base64}" style="width:100%;height:auto;display:block;object-fit:contain;" />
         </div>
       </div>
-      <div style="padding:8px 24px 16px;">
-        <h3 style="font-size:13px;color:#64748b;margin:0 0 10px;font-weight:600;">Issues ${chunkIssues.length > 0 ? chunkIssues[0].issueNum + '–' + chunkIssues[chunkIssues.length-1].issueNum : ''} · Figma Frame: ${frameName}</h3>
-        ${issueCards || '<p style="color:#10b981;font-size:14px;">✅ No issues in this view</p>'}
+      <div style="padding:16px 24px 24px;">
+        <div style="display:flex;align-items:center;gap:8px;margin:0 0 16px;">
+          <h3 style="font-size:13px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Issues ${chunkIssues.length > 0 ? chunkIssues[0].issueNum + '–' + chunkIssues[chunkIssues.length-1].issueNum : ''}</h3>
+          <div style="height:4px;width:4px;border-radius:50%;background:#cbd5e1;"></div>
+          <div style="font-size:13px;color:#0f1b35;font-weight:600;">${frameName}</div>
+        </div>
+        ${issueCards || '<p style="color:#10b981;font-size:14px;font-weight:500;padding:16px;background:#f0fdf4;border-radius:12px;border:1px solid #bbf7d0;">✅ No issues in this view</p>'}
       </div>`;
     }).join('');
 
