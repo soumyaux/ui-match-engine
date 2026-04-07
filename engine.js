@@ -837,55 +837,52 @@ async function runAudit() {
         console.log(`📦 Matched ${figmaMatchedClusters.length} visual clusters to Figma tokens (from ${finalClusters.length} candidates).`);
 
         // --- SMART BOX ANALYSIS: identify DOM element + classify error type ---
-        // AND call Gemini 3.1 Flash AI Vision for smart naming/fixes
-        console.log('🤖 Calling AI Vision for smart visual analysis...');
-        
-        for (let i = 0; i < figmaMatchedClusters.length; i++) {
-            const box = figmaMatchedClusters[i];
-            let elementLabel = figmaMatchedNames[i];
-            let aiFeedback = "Visual difference detected.";
+        // Capture crops for first 5 issues in parallel, then call Gemini in parallel.
+        console.log('🤖 Calling AI Vision for smart visual analysis (parallel)...');
 
-            // 1. Capture AI-Vision Crop (Limit to first 5 for speed/free tier)
-            if (i < 5) {
-              try {
-                const cropBuffer = await page.screenshot({ 
-                  clip: { x: box.x, y: box.y, width: box.w, height: box.h },
-                  type: 'png'
-                });
-                const base64 = cropBuffer.toString('base64');
-                
-                const visionRes = await fetch(`${WORKER_URL}/api/vision`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    image: base64,
-                    prompt: "Analyze this UI component error. Respond in exactly this format: 'Name: [Component Name] | Fix: [Short 1-sentence fix]'."
-                  })
-                });
-                
-                if (visionRes.ok) {
-                  const { analysis } = await visionRes.json();
-                  // Filter out failed AI responses
-                  if (analysis && !analysis.toLowerCase().includes('failed') && !analysis.toLowerCase().includes('error')) {
-                    if (analysis.includes('|')) {
-                      const [name, fix] = analysis.split('|');
-                      elementLabel = name.replace('Name:', '').trim();
-                      aiFeedback = fix.replace('Fix:', '').trim();
-                    } else {
-                      aiFeedback = analysis;
-                    }
-                  }
-                }
-              } catch (aiErr) {
-                console.warn('⚠️ AI Vision call failed for box', i, aiErr.message);
+        const AI_LIMIT = Math.min(5, figmaMatchedClusters.length);
+
+        // Capture all crops concurrently
+        const cropBase64s = await Promise.all(
+          figmaMatchedClusters.slice(0, AI_LIMIT).map(box =>
+            page.screenshot({ clip: { x: box.x, y: box.y, width: box.w, height: box.h }, type: 'png' })
+              .then(buf => buf.toString('base64'))
+              .catch(() => null)
+          )
+        );
+
+        // Call Gemini Vision for all crops in parallel
+        const aiResults = await Promise.all(
+          cropBase64s.map((base64, i) => {
+            if (!base64) return Promise.resolve({ label: figmaMatchedNames[i], feedback: 'Visual difference detected.' });
+            return fetch(`${WORKER_URL}/api/vision`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                image: base64,
+                prompt: "Analyze this UI component error. Respond in exactly this format: 'Name: [Component Name] | Fix: [Short 1-sentence fix]'."
+              })
+            })
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+              const analysis = data?.analysis || '';
+              if (analysis && !analysis.toLowerCase().includes('failed') && analysis.includes('|')) {
+                const [name, fix] = analysis.split('|');
+                return { label: name.replace('Name:', '').trim(), feedback: fix.replace('Fix:', '').trim() };
               }
-            }
+              return { label: figmaMatchedNames[i], feedback: analysis || 'Visual difference detected.' };
+            })
+            .catch(() => ({ label: figmaMatchedNames[i], feedback: 'Visual difference detected.' }));
+          })
+        );
 
+        for (let i = 0; i < figmaMatchedClusters.length; i++) {
+            const ai = aiResults[i] || { label: figmaMatchedNames[i], feedback: 'Visual difference detected.' };
             visualIssues.push({
                 type: 'MAJOR_VISUAL',
-                element: elementLabel,
-                details: [aiFeedback],
-                rect: box
+                element: ai.label,
+                details: [ai.feedback],
+                rect: figmaMatchedClusters[i]
             });
         }
 
@@ -960,6 +957,129 @@ async function runAudit() {
       // Exit with error code 1 so the Action drops into the 'failure()' block
       process.exit(1);
     }
+
+    // ══════════════════════════════════════════
+    // PHASE 4: RESPONSIVE BREAKPOINT CHECK
+    // ══════════════════════════════════════════
+    // Re-render at common breakpoints (only those narrower than the Figma frame)
+    // and check for real breakage: overflow, off-screen elements, text clipping.
+    console.log('📱 Running responsive breakpoint checks...');
+
+    const ALL_BREAKPOINTS = [
+      { width: 1280, label: 'Desktop (1280px)' },
+      { width: 1024, label: 'Tablet Landscape (1024px)' },
+      { width: 768,  label: 'Tablet Portrait (768px)' },
+      { width: 375,  label: 'Mobile (375px)' },
+    ];
+    const activeBreakpoints = ALL_BREAKPOINTS.filter(bp => bp.width < frameWidth);
+    const responsiveIssuesByBreakpoint = [];
+
+    // Collect leaf tokens for position probing (skip containers and tiny spacers)
+    const leafTokens = designTokens.filter(t =>
+      t.role !== 'container' && (t.w || 0) >= 30 && (t.h || 0) >= 20
+    ).slice(0, 40); // cap at 40 to keep this fast
+
+    for (const bp of activeBreakpoints) {
+      await page.setViewportSize({ width: bp.width, height: 900 });
+      await page.waitForTimeout(300);
+
+      const bpIssues = await page.evaluate(({ tokens, bpWidth }) => {
+        const issues = [];
+
+        // 1. Horizontal overflow — the most common responsive bug
+        const scrollW = document.documentElement.scrollWidth;
+        const clientW = document.documentElement.clientWidth;
+        if (scrollW > clientW + 5) {
+          issues.push({
+            issueType: 'overflow',
+            label: 'Page has horizontal overflow',
+            detail: `Page content (${scrollW}px) is wider than the ${bpWidth}px viewport. Users will need to scroll sideways.`
+          });
+        }
+
+        // 2. Per-token checks
+        for (const token of tokens) {
+          const tokenName = (token.name || 'unknown').split('/').pop().trim();
+          // Clamp x to stay inside the narrower viewport
+          const cx = Math.min((token.x || 0) + (token.w || 0) / 2, bpWidth - 10);
+          const cy = (token.y || 0) + (token.h || 0) / 2;
+
+          const el = document.elementFromPoint(cx, cy);
+          if (!el || el === document.body || el === document.documentElement) continue;
+
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          const tag = el.tagName.toUpperCase();
+
+          // Skip media elements — they legitimately change size
+          if (tag === 'IMG' || tag === 'VIDEO' || tag === 'CANVAS' || tag === 'SVG') continue;
+          if (el.closest?.('svg')) continue;
+
+          // 2a. Element is entirely off-screen to the right
+          if (rect.left > bpWidth + 10) {
+            issues.push({
+              issueType: 'offscreen',
+              label: `"${tokenName}" is off-screen`,
+              detail: `Element starts at ${Math.round(rect.left)}px — outside the ${bpWidth}px viewport.`
+            });
+            continue;
+          }
+
+          // 2b. Element content overflows its own box
+          if (el.scrollWidth > el.clientWidth + 8 && el.clientWidth > 0) {
+            issues.push({
+              issueType: 'overflow',
+              label: `"${tokenName}" content overflows`,
+              detail: `Element is ${el.clientWidth}px wide but its content is ${el.scrollWidth}px. Text or children are spilling out.`
+            });
+          }
+
+          // 2c. Text is visually clipped (hidden overflow + content taller than box)
+          if ((style.overflow === 'hidden' || style.overflow === 'clip') &&
+              el.scrollHeight > el.clientHeight + 8 && el.clientHeight > 0) {
+            issues.push({
+              issueType: 'clipped',
+              label: `"${tokenName}" text is clipped`,
+              detail: `Content height is ${el.scrollHeight}px but box is only ${el.clientHeight}px. Text is being cut off.`
+            });
+          }
+
+          // 2d. Element overlaps its sibling (crude overlap detection)
+          const nextSibling = el.nextElementSibling;
+          if (nextSibling) {
+            const sibRect = nextSibling.getBoundingClientRect();
+            if (rect.bottom > sibRect.top + 10 && rect.right > sibRect.left + 10 &&
+                rect.left < sibRect.right && rect.top < sibRect.bottom) {
+              issues.push({
+                issueType: 'overlap',
+                label: `"${tokenName}" overlaps next element`,
+                detail: `At ${bpWidth}px, this element visually overlaps its sibling — likely a missing responsive rule.`
+              });
+            }
+          }
+        }
+
+        // Deduplicate by label
+        const seen = new Set();
+        return issues.filter(i => {
+          if (seen.has(i.label)) return false;
+          seen.add(i.label);
+          return true;
+        });
+      }, { tokens: leafTokens, bpWidth: bp.width });
+
+      if (bpIssues.length > 0) {
+        responsiveIssuesByBreakpoint.push({ label: bp.label, width: bp.width, issues: bpIssues });
+        console.log(`  📱 ${bp.label}: ${bpIssues.length} issue(s)`);
+      } else {
+        console.log(`  ✅ ${bp.label}: No issues`);
+      }
+    }
+
+    // Restore original viewport before screenshots
+    await page.setViewportSize({ width: frameWidth, height: frameHeight });
+    await page.waitForTimeout(300);
+    console.log(`📱 Responsive check done: ${responsiveIssuesByBreakpoint.reduce((s, b) => s + b.issues.length, 0)} total responsive issues.`);
 
     // === DYNAMIC MULTI-SCREENSHOT LOGIC ===
     // Remove the image blackout so PDF screenshots show real website images
@@ -1169,6 +1289,29 @@ async function runAudit() {
     </div>
   </div>
   ${auditSections}
+  ${responsiveIssuesByBreakpoint.length > 0 ? `
+  <div style="padding:16px 24px 8px;">
+    <h2 style="font-size:15px;color:#0f1b35;margin:0 0 4px;">📱 Responsive Breakpoint Check</h2>
+    <p style="font-size:12px;color:#64748b;margin:0 0 12px;">Issues found when the page is resized to smaller viewports.</p>
+    ${responsiveIssuesByBreakpoint.map(bp => `
+      <div style="margin-bottom:14px;">
+        <div style="font-size:13px;font-weight:700;color:#0f1b35;margin-bottom:8px;padding:6px 12px;background:#f1f5f9;border-radius:6px;">
+          ${bp.label}
+          <span style="font-weight:400;color:#64748b;margin-left:8px;">${bp.issues.length} issue${bp.issues.length !== 1 ? 's' : ''}</span>
+        </div>
+        ${bp.issues.map(issue => `
+          <div style="display:flex;gap:10px;padding:10px 14px;margin:0 0 6px;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.05);border-left:4px solid ${issue.issueType === 'overflow' ? '#EF4444' : issue.issueType === 'clipped' ? '#F97316' : issue.issueType === 'offscreen' ? '#8B5CF6' : '#EC4899'};break-inside:avoid;">
+            <div style="font-size:20px;line-height:1;">${issue.issueType === 'overflow' ? '↔️' : issue.issueType === 'clipped' ? '✂️' : issue.issueType === 'offscreen' ? '🚫' : '⚠️'}</div>
+            <div>
+              <div style="font-weight:700;font-size:13px;color:#0f1b35;">${issue.label}</div>
+              <div style="font-size:12px;color:#64748b;margin-top:2px;">${issue.detail}</div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `).join('')}
+  </div>
+  ` : ''}
 </body></html>`;
 
     // 5. Render final PDF report
