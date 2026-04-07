@@ -82,6 +82,8 @@ async function runAudit() {
         fs.writeFileSync('playwright-report/error-log.txt', `HTTP Error ${status}: Target website returned an error or is unreachable.`);
         process.exit(1);
       }
+      // Extra wait to ensure all CSS/JS has fully loaded
+      await page.waitForLoadState('load');
     } catch (navError) {
       console.error(`❌ Failed to reach ${targetUrl}. Details: ${navError.message}`);
       fs.writeFileSync('playwright-report/error-log.txt', `Navigation failed: ${navError.message}`);
@@ -92,21 +94,32 @@ async function runAudit() {
     // ── FULL ENVIRONMENT NORMALIZATION ──
     console.log('⏳ Normalizing environment...');
 
-    // 1. Wait for ALL web fonts to finish loading
+    // 1. Wait for ALL web fonts and stylesheets to finish loading
     await page.evaluate(() => document.fonts.ready);
+    await page.waitForTimeout(500);
     console.log('🔤 Fonts loaded.');
 
-    // Detect if the site uses a responsive viewport meta tag.
-    // If Figma frame width ≠ standard desktop (1440px), there may be
-    // scaling differences between the design and what we render.
+    // Detect if the site uses a responsive viewport meta tag
     const isResponsive = await page.evaluate(() => {
       const meta = document.querySelector('meta[name="viewport"]');
       return !!(meta && meta.content && meta.content.includes('width=device-width'));
     });
-    if (isResponsive && frameWidth !== 1440) {
-      console.log(`⚠️ Responsive site detected at non-standard width (${frameWidth}px). Some spacing/text differences may be due to responsive scaling.`);
+
+    // For non-responsive (fixed-width) sites, clamp viewport to actual content width
+    // to avoid artificial side spacing when Figma frame is wider than the site
+    if (!isResponsive) {
+      const actualWidth = await page.evaluate(() => {
+        const body = document.body;
+        const main = document.querySelector('main') || document.querySelector('#root') || document.querySelector('#app') || body;
+        return Math.max(body.scrollWidth, main.scrollWidth || 0);
+      });
+      if (actualWidth > 0 && actualWidth < frameWidth * 0.9) {
+        console.log(`📐 Non-responsive site: content width ${actualWidth}px < frame ${frameWidth}px. Clamping viewport.`);
+        await page.setViewportSize({ width: actualWidth, height: frameHeight });
+        await page.waitForTimeout(300);
+      }
     }
-    
+
     // 2. Freeze ALL animations, transitions, and hide dynamic overlays
     await page.addStyleTag({ content: `
       *, *::before, *::after {
@@ -131,7 +144,7 @@ async function runAudit() {
 
 
     // 4. Multi-pass scroll to trigger all lazy-loaded content (images, deferred components)
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(800);
     await page.evaluate(() => window.scrollTo(0, Math.floor(document.body.scrollHeight / 3)));
     await page.waitForTimeout(200);
     await page.evaluate(() => window.scrollTo(0, Math.floor((document.body.scrollHeight * 2) / 3)));
@@ -491,6 +504,17 @@ async function runAudit() {
           
           tokenFailures++;
           
+          // Prefer Figma token dimensions for precise highlighting; fall back to DOM rect
+          const issueRect = {
+            x: Math.round(design.x != null ? design.x : (rect.left + (window.scrollX || 0))),
+            y: Math.round(design.y != null ? design.y : (rect.top + (window.scrollY || 0))),
+            w: Math.round(design.w && design.w > 5 ? design.w : (rect.width || 50)),
+            h: Math.round(design.h && design.h > 5 ? design.h : (rect.height || 50))
+          };
+
+          // Skip container-level matches (too large to be a real element issue)
+          if (issueRect.w > window.innerWidth * 0.4 && issueRect.h > 300) return;
+
           if (layoutErrors.length > 0) {
             const idx = results.length;
             seenElements.set(elKey, idx);
@@ -498,7 +522,7 @@ async function runAudit() {
               type: 'LAYOUT_SHIFT',
               element: elName,
               details: layoutErrors,
-              rect: { x: Math.round(rect.left + (window.scrollX || 0) || design.x || 0), y: Math.round(rect.top + (window.scrollY || 0) || design.y || 0), w: Math.round(rect.width || design.w || 50), h: Math.round(rect.height || design.h || 50) }
+              rect: issueRect
             });
           }
           if (styleErrors.length > 0) {
@@ -508,7 +532,7 @@ async function runAudit() {
               type: 'MINOR_DIFF',
               element: elName,
               details: styleErrors,
-              rect: { x: Math.round(rect.left + (window.scrollX || 0) || design.x || 0), y: Math.round(rect.top + (window.scrollY || 0) || design.y || 0), w: Math.round(rect.width || design.w || 50), h: Math.round(rect.height || design.h || 50) }
+              rect: issueRect
             });
           }
         } else {
@@ -1146,9 +1170,7 @@ async function runAudit() {
                 box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:3px ${borderStyle} ${color};background:rgba(${r},${g},${b},0.05);border-radius:4px;`;
                 document.body.appendChild(box);
 
-                // Badge label: "1 · Button" pill instead of just "1"
-                const labelText = issue.element ? issue.element.substring(0, 15) : '';
-                const badgeWidth = labelText ? Math.min(180, 28 + labelText.length * 7) : 28;
+                const badgeWidth = 28;
                 const badgeHeight = 28;
 
                 let badgeX = bx - 14;
@@ -1183,11 +1205,11 @@ async function runAudit() {
                 }
                 placedBadges.push({ x: badgeX, y: badgeY, w: badgeWidth });
 
-                // Issue badge pill with element name
+                // Issue number badge (circle)
                 const numBadge = document.createElement('div');
                 numBadge.className = 'audit-marker-badge';
-                numBadge.textContent = issue.issueNum + (labelText ? ' \u00b7 ' + labelText : '');
-                numBadge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;min-width:28px;height:28px;padding:0 10px;background:${color};color:white;border-radius:14px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis;`;
+                numBadge.textContent = String(issue.issueNum);
+                numBadge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
                 document.body.appendChild(numBadge);
 
                 // Leader line from badge to box (only if badge is far enough)
@@ -1312,7 +1334,7 @@ async function runAudit() {
         <div style="white-space:nowrap;">📅 <strong>Date:</strong> ${auditDate}</div>
       </div>
 
-      <div>📐 <strong>Viewport:</strong> ${frameWidth}&times;${frameHeight}px${isResponsive ? ` <span style="background:rgba(255,200,0,0.25);color:#fff;padding:2px 10px;border-radius:4px;font-size:11px;margin-left:8px;border:1px solid rgba(255,255,255,0.3);">⚠️ Responsive site — audit at Figma frame width (${frameWidth}px). If your Figma frame is 1920px but site renders at 1440px, text/gap values may differ by design.</span>` : ''}</div>
+      <div>📐 <strong>Viewport:</strong> ${frameWidth}&times;${frameHeight}px</div>
     </div>
     <div style="display:flex;gap:16px;margin-top:24px;">
       <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
