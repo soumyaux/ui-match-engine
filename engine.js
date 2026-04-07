@@ -1106,7 +1106,7 @@ async function runAudit() {
         const chunkEnd = i === maxScreenshots - 1 ? allIssues.length : chunkStart + issuesPerScreen;
         const issueChunk = allIssues.slice(chunkStart, chunkEnd);
 
-        await page.evaluate((issues, palette) => {
+        await page.evaluate(({ issues, palette }) => {
             const placedBadges = [];
 
             issues.forEach(issue => {
@@ -1165,7 +1165,7 @@ async function runAudit() {
                 numBadge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
                 document.body.appendChild(numBadge);
             });
-        }, issueChunk, ISSUE_PALETTE);
+        }, { issues: issueChunk, palette: ISSUE_PALETTE });
 
         const path = `playwright-report/screenshot-chunk-${i+1}.png`;
         // Full-page screenshot: capture from y=0 to bottom of last issue (+ padding)
