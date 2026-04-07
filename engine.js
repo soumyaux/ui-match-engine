@@ -495,17 +495,11 @@ async function runAudit() {
           
           tokenFailures++;
           
-          // Use DOM position (accurate on live page) but cap size with Figma dimensions
-          // to avoid oversized boxes when DOM element is a large container
-          let rw = Math.round(rect.width || design.w || 50);
-          let rh = Math.round(rect.height || design.h || 50);
-          if (design.w > 5 && rw > design.w * 2) rw = Math.round(design.w);
-          if (design.h > 5 && rh > design.h * 2) rh = Math.round(design.h);
           const issueRect = {
             x: Math.round(rect.left + (window.scrollX || 0)),
             y: Math.round(rect.top + (window.scrollY || 0)),
-            w: rw,
-            h: rh
+            w: Math.round(rect.width || design.w || 50),
+            h: Math.round(rect.height || design.h || 50)
           };
 
           // Skip container-level matches
@@ -849,12 +843,7 @@ async function runAudit() {
           const centerInToken = clusterCX >= bestTx && clusterCX <= bestTx + bestTw &&
                                 clusterCY >= bestTy && clusterCY <= bestTy + bestTh;
           if (bestToken && (bestIoU > 0.25 || (bestIoU > 0.15 && centerInToken))) {
-            // Use cluster position (accurate on live page) but cap size with Figma token
-            const tw = Math.round(bestToken.w || 50);
-            const th = Math.round(bestToken.h || 50);
-            const cappedW = box.w > tw * 2 ? tw : box.w;
-            const cappedH = box.h > th * 2 ? th : box.h;
-            figmaMatchedClusters.push({ x: box.x, y: box.y, w: cappedW, h: cappedH });
+            figmaMatchedClusters.push(box);
             // Use the Figma layer name (last 2 path segments for better context)
             const rawName = bestToken.name || 'unknown';
             const segments = rawName.split('/').map(s => s.trim()).filter(Boolean);
@@ -1144,18 +1133,14 @@ async function runAudit() {
                 const bw = issue.rect.w + 12;
                 const bh = issue.rect.h + 12;
 
-                // Draw bounding box — dashed for visual issues, solid for token issues
+                // Draw a clean colored bounding box around the flagged component
                 const box = document.createElement('div');
                 box.className = 'audit-marker-box';
                 const r = parseInt(color.slice(1, 3), 16);
                 const g = parseInt(color.slice(3, 5), 16);
                 const b = parseInt(color.slice(5, 7), 16);
-                const borderStyle = issue.type === 'MAJOR_VISUAL' ? 'dashed' : 'solid';
-                box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:3px ${borderStyle} ${color};background:rgba(${r},${g},${b},0.05);border-radius:4px;`;
+                box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:3px solid ${color};background:rgba(${r},${g},${b},0.12);border-radius:4px;`;
                 document.body.appendChild(box);
-
-                const badgeWidth = 28;
-                const badgeHeight = 28;
 
                 let badgeX = bx - 14;
                 let badgeY = by - 14;
@@ -1164,30 +1149,31 @@ async function runAudit() {
                 badgeX = Math.max(10, badgeX);
                 badgeY = Math.max(10, badgeY);
 
-                // Collision Detection — stack vertically with cascading indent
+                // Collision Detection
+                const badgeWidth = 28;
+                const badgeHeight = 28;
                 const MARGIN = 4;
                 let hasCollision = true;
-                let attempts = 0;
-                while (hasCollision && attempts < 20) {
+                while (hasCollision) {
                     hasCollision = false;
-                    attempts++;
                     for (const placed of placedBadges) {
                         if (
-                            badgeX < placed.x + placed.w + MARGIN &&
+                            badgeX < placed.x + badgeWidth + MARGIN &&
                             badgeX + badgeWidth + MARGIN > placed.x &&
                             badgeY < placed.y + badgeHeight + MARGIN &&
                             badgeY + badgeHeight + MARGIN > placed.y
                         ) {
-                            // Stack vertically below colliding badge with slight indent
-                            badgeY = placed.y + badgeHeight + MARGIN;
-                            badgeX = bx - 14 + (attempts * 4);
-                            badgeX = Math.max(10, badgeX);
+                            badgeX = placed.x + badgeWidth + MARGIN;
                             hasCollision = true;
+                            if (badgeX > window.innerWidth - 40) {
+                                badgeX = bx - 14;
+                                badgeY += badgeHeight + MARGIN;
+                            }
                             break;
                         }
                     }
                 }
-                placedBadges.push({ x: badgeX, y: badgeY, w: badgeWidth });
+                placedBadges.push({ x: badgeX, y: badgeY });
 
                 // Issue number badge (circle)
                 const numBadge = document.createElement('div');
@@ -1195,22 +1181,6 @@ async function runAudit() {
                 numBadge.textContent = String(issue.issueNum);
                 numBadge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
                 document.body.appendChild(numBadge);
-
-                // Leader line from badge to box (only if badge is far enough)
-                const lineStartX = badgeX + badgeWidth / 2;
-                const lineStartY = badgeY + badgeHeight;
-                const lineEndX = bx + bw / 2;
-                const lineEndY = by;
-                const dx = lineEndX - lineStartX;
-                const dy = lineEndY - lineStartY;
-                const len = Math.sqrt(dx * dx + dy * dy);
-                if (len > 20) {
-                    const angle = Math.atan2(dy, dx) * 180 / Math.PI;
-                    const line = document.createElement('div');
-                    line.className = 'audit-marker-badge';
-                    line.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${lineStartY}px;left:${lineStartX}px;width:${len}px;height:2px;background:${color};opacity:0.7;transform-origin:0 0;transform:rotate(${angle}deg);`;
-                    document.body.appendChild(line);
-                }
             });
         }, { issues: issueChunk, palette: ISSUE_PALETTE });
 
@@ -1220,22 +1190,15 @@ async function runAudit() {
         const contentBounds = await page.evaluate((chunk) => {
           const vw = window.innerWidth;
           const vh = window.innerHeight;
-          const sw = document.body.scrollWidth || vw;
-          if (!chunk || chunk.length === 0) return { width: Math.max(vw, sw), height: vh };
-          
+          if (!chunk || chunk.length === 0) return { width: vw, height: vh };
+
           let maxY = 0;
-          let maxX = 0;
           for (const issue of chunk) {
             const bottom = (issue.rect?.y || 0) + (issue.rect?.h || 0) + 80;
-            const right = (issue.rect?.x || 0) + (issue.rect?.w || 0) + 40;
             if (bottom > maxY) maxY = bottom;
-            if (right > maxX) maxX = right;
           }
-          
-          // Use full scrollable width to prevent content clipping
-          const cropWidth = Math.max(vw, sw, maxX);
-          const cropHeight = Math.max(vh, maxY);
-          return { width: Math.min(cropWidth, 3000), height: Math.min(cropHeight, 5000) };
+
+          return { width: vw, height: Math.min(Math.max(vh, maxY), 5000) };
         }, issueChunk);
         
         await page.screenshot({ path, fullPage: true, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
