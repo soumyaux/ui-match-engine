@@ -1281,9 +1281,9 @@ async function runAudit() {
 </head>
 <body style="margin:0;font-family:sans-serif;background:#ffffff;">
   <div style="background:linear-gradient(135deg,#0f5ec4 0%,#3da5ff 100%);padding:24px 24px 20px;color:#fff;">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
-      <div style="font-size:28px;font-weight:800;letter-spacing:-0.5px;">UI Match</div>
-      <div style="font-size:13px;opacity:0.7;border-left:2px solid rgba(255,255,255,0.3);padding-left:16px;">Visual Audit Report</div>
+    <div style="display:flex;align-items:center;margin-bottom:16px;">
+      <img src="https://raw.githubusercontent.com/soumyaux/ui-match-engine/main/UI%20Match%20LOGO.png" alt="UI Match Logo" style="height:32px;margin-right:12px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.1));" />
+      <div style="font-size:13px;opacity:0.9;border-left:2px solid rgba(255,255,255,0.3);padding-left:12px;">Visual Audit Report</div>
     </div>
     <div style="display:flex;flex-direction:column;gap:10px;font-size:14px;opacity:0.9;">
       <div>🎨 <strong>Figma Frame:</strong> ${frameName}</div>
@@ -1334,6 +1334,15 @@ async function runAudit() {
     `).join('')}
   </div>
   ` : ''}
+
+  <!-- Premium Footer -->
+  <div style="margin: 32px 24px 24px; background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; display: flex; justify-content: space-between; align-items: center; break-inside: avoid; page-break-inside: avoid;">
+    <div style="font-size: 14px; color: #475569;">
+      Designed & built with <span style="color:#ef4444">❤️</span> by 
+      <a href="https://in.linkedin.com/in/soumyaux/" target="_blank" style="color:#0f5ec4; font-weight: 700; text-decoration: none;">Soumya</a>
+    </div>
+    <a href="https://in.linkedin.com/in/soumyaux/" target="_blank" style="background: #0f1b35; color: #fff; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; text-decoration: none; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">Let's Connect</a>
+  </div>
 </body></html>`;
 
     // 5. Render final PDF report
