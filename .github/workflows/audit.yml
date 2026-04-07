@@ -30,6 +30,9 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+permissions:
+  contents: read   # least privilege — workflow only needs to read repo files
+
 jobs:
   audit:
     runs-on: ubuntu-latest
@@ -52,11 +55,6 @@ jobs:
             -H "Prefer: return=minimal" \
             -d '{"audit_status": "running"}'
 
-      - name: 👀 Check Figma Inputs
-        run: |
-          echo "Target URL: ${{ github.event.inputs.url }}"
-          echo "Scan ID: ${{ github.event.inputs.scan_id }}"
-          echo "Tokens length: $(echo '${{ github.event.inputs.tokens }}' | wc -c) bytes"
 
       - name: 📥 Download Design Tokens
         if: ${{ github.event.inputs.tokens_url != '' }}
