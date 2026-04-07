@@ -325,7 +325,10 @@ async function runAudit() {
         if (rect.right < 0 || rect.bottom < 0) return;
         // Use Figma layer name for issue titles — much more useful for designers
         // Clean it: take last segment of path (e.g., "Frame / Section / Button" → "Button")
-        const figmaName = name && name !== 'unknown' ? name.split('/').pop().trim() : null;
+        const _segments = (name && name !== 'unknown') ? name.split('/').map(s => s.trim()).filter(Boolean) : [];
+        const figmaName = _segments.length >= 2
+            ? _segments.slice(-2).join(' / ')
+            : (_segments.length === 1 ? _segments[0] : null);
         const elName = figmaName || getElementName(el);
         const errors = [];
         const role = design.role || 'leaf'; // text | container | leaf
@@ -652,12 +655,12 @@ async function runAudit() {
             }
         }
 
-        // Merge overlapping or close clusters (20px padding for section-level grouping)
+        // Merge overlapping or close clusters (10px padding to avoid over-merging)
         for (let i = 0; i < clusters.length; i++) {
             for (let j = i + 1; j < clusters.length; j++) {
                 const c1 = clusters[i], c2 = clusters[j];
                 if (!c1 || !c2) continue;
-                const padding = 20;
+                const padding = 10;
                 if (c1.x < c2.x + c2.w + padding && c1.x + c1.w + padding > c2.x &&
                     c1.y < c2.y + c2.h + padding && c1.y + c1.h + padding > c2.y) {
                     
@@ -752,7 +755,7 @@ async function runAudit() {
             
             // Only snap if the container isn't much bigger than the original cluster (max 2x)
             if (r.width > 10 && r.height > 10 && r.width < window.innerWidth * 0.5 &&
-                r.width <= box.w * 2.5 && r.height <= box.h * 2.5) {
+                r.width <= box.w * 1.8 && r.height <= box.h * 1.8) {
               return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
             }
             return box;
@@ -825,11 +828,31 @@ async function runAudit() {
           const bestTh = bestToken ? (bestToken.h || 0) : 0;
           const centerInToken = clusterCX >= bestTx && clusterCX <= bestTx + bestTw &&
                                 clusterCY >= bestTy && clusterCY <= bestTy + bestTh;
-          if (bestToken && (bestIoU > 0.25 || (bestIoU > 0.08 && centerInToken))) {
-            figmaMatchedClusters.push(box);
-            // Use the Figma layer name (last path segment)
+          if (bestToken && (bestIoU > 0.25 || (bestIoU > 0.15 && centerInToken))) {
+            // Use Figma token bounds for precise highlighting instead of inflated cluster box
+            const tokenRect = {
+                x: Math.round(bestToken.x || 0),
+                y: Math.round(bestToken.y || 0),
+                w: Math.round(bestToken.w || 50),
+                h: Math.round(bestToken.h || 50)
+            };
+            if (bestIoU > 0.25) {
+                // Strong match: use token bounds directly
+                figmaMatchedClusters.push(tokenRect);
+            } else {
+                // Weak match: use intersection rect + 4px padding
+                const ix1 = Math.max(box.x, tokenRect.x) - 4;
+                const iy1 = Math.max(box.y, tokenRect.y) - 4;
+                const ix2 = Math.min(box.x + box.w, tokenRect.x + tokenRect.w) + 4;
+                const iy2 = Math.min(box.y + box.h, tokenRect.y + tokenRect.h) + 4;
+                figmaMatchedClusters.push({ x: ix1, y: iy1, w: ix2 - ix1, h: iy2 - iy1 });
+            }
+            // Use the Figma layer name (last 2 path segments for better context)
             const rawName = bestToken.name || 'unknown';
-            const cleanName = rawName.split('/').pop().trim();
+            const segments = rawName.split('/').map(s => s.trim()).filter(Boolean);
+            const cleanName = segments.length >= 2
+                ? segments.slice(-2).join(' / ')
+                : (segments[0] || 'Component');
             figmaMatchedNames.push(cleanName !== 'unknown' ? cleanName : 'Component');
           }
         }
@@ -1113,14 +1136,20 @@ async function runAudit() {
                 const bw = issue.rect.w + 12;
                 const bh = issue.rect.h + 12;
 
-                // Draw a clean colored bounding box around the flagged component
+                // Draw bounding box — dashed for visual issues, solid for token issues
                 const box = document.createElement('div');
                 box.className = 'audit-marker-box';
                 const r = parseInt(color.slice(1, 3), 16);
                 const g = parseInt(color.slice(3, 5), 16);
                 const b = parseInt(color.slice(5, 7), 16);
-                box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:3px solid ${color};background:rgba(${r},${g},${b},0.12);border-radius:4px;`;
+                const borderStyle = issue.type === 'MAJOR_VISUAL' ? 'dashed' : 'solid';
+                box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:3px ${borderStyle} ${color};background:rgba(${r},${g},${b},0.05);border-radius:4px;`;
                 document.body.appendChild(box);
+
+                // Badge label: "1 · Button" pill instead of just "1"
+                const labelText = issue.element ? issue.element.substring(0, 15) : '';
+                const badgeWidth = labelText ? Math.min(180, 28 + labelText.length * 7) : 28;
+                const badgeHeight = 28;
 
                 let badgeX = bx - 14;
                 let badgeY = by - 14;
@@ -1129,38 +1158,53 @@ async function runAudit() {
                 badgeX = Math.max(10, badgeX);
                 badgeY = Math.max(10, badgeY);
 
-                // Collision Detection
-                const badgeWidth = 28;
-                const badgeHeight = 28;
+                // Collision Detection — stack vertically with cascading indent
                 const MARGIN = 4;
                 let hasCollision = true;
-                while (hasCollision) {
+                let attempts = 0;
+                while (hasCollision && attempts < 20) {
                     hasCollision = false;
+                    attempts++;
                     for (const placed of placedBadges) {
                         if (
-                            badgeX < placed.x + badgeWidth + MARGIN &&
+                            badgeX < placed.x + placed.w + MARGIN &&
                             badgeX + badgeWidth + MARGIN > placed.x &&
                             badgeY < placed.y + badgeHeight + MARGIN &&
                             badgeY + badgeHeight + MARGIN > placed.y
                         ) {
-                            badgeX = placed.x + badgeWidth + MARGIN;
+                            // Stack vertically below colliding badge with slight indent
+                            badgeY = placed.y + badgeHeight + MARGIN;
+                            badgeX = bx - 14 + (attempts * 4);
+                            badgeX = Math.max(10, badgeX);
                             hasCollision = true;
-                            if (badgeX > window.innerWidth - 40) {
-                                badgeX = bx - 14; 
-                                badgeY += badgeHeight + MARGIN; 
-                            }
                             break;
                         }
                     }
                 }
-                placedBadges.push({ x: badgeX, y: badgeY });
+                placedBadges.push({ x: badgeX, y: badgeY, w: badgeWidth });
 
-                // Issue number badge (circle)
+                // Issue badge pill with element name
                 const numBadge = document.createElement('div');
                 numBadge.className = 'audit-marker-badge';
-                numBadge.textContent = String(issue.issueNum);
-                numBadge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
+                numBadge.textContent = issue.issueNum + (labelText ? ' \u00b7 ' + labelText : '');
+                numBadge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;min-width:28px;height:28px;padding:0 10px;background:${color};color:white;border-radius:14px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis;`;
                 document.body.appendChild(numBadge);
+
+                // Leader line from badge to box (only if badge is far enough)
+                const lineStartX = badgeX + badgeWidth / 2;
+                const lineStartY = badgeY + badgeHeight;
+                const lineEndX = bx + bw / 2;
+                const lineEndY = by;
+                const dx = lineEndX - lineStartX;
+                const dy = lineEndY - lineStartY;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                if (len > 20) {
+                    const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+                    const line = document.createElement('div');
+                    line.className = 'audit-marker-badge';
+                    line.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${lineStartY}px;left:${lineStartX}px;width:${len}px;height:2px;background:${color};opacity:0.7;transform-origin:0 0;transform:rotate(${angle}deg);`;
+                    document.body.appendChild(line);
+                }
             });
         }, { issues: issueChunk, palette: ISSUE_PALETTE });
 
