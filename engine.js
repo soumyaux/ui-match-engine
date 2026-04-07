@@ -1253,14 +1253,14 @@ async function runAudit() {
       const issueCards = chunkIssues.map(buildIssueCard).join('');
       
       return `
-      <div style="padding:16px 24px 8px;">
-        <h2 style="font-size:15px;color:#0f1b35;margin:0 0 16px;font-weight:700;display:flex;align-items:center;gap:8px;">
+      <div style="padding:16px 24px 12px;">
+        <h2 style="font-size:15px;color:#0f1b35;margin:0;font-weight:700;display:flex;align-items:center;gap:8px;">
           📸 Audit View ${idx + 1} of ${maxScreenshots} 
           <span style="background:#f1f5f9;padding:4px 10px;border-radius:20px;font-size:12px;color:#475569;font-weight:500;">${chunkIssues.length} issue${chunkIssues.length !== 1 ? 's' : ''}</span>
         </h2>
-        <div style="border-radius:12px;box-shadow:0 4px 24px -4px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;">
-          <img src="data:image/png;base64,${base64}" style="width:100%;height:auto;display:block;object-fit:contain;" />
-        </div>
+      </div>
+      <div style="box-shadow:inset 0 4px 24px -4px rgba(0,0,0,0.08);border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;overflow:hidden; width: 100%; background: #e2e8f0; display:flex; align-items:center; justify-content:center;">
+        <img src="data:image/png;base64,${base64}" style="width:100%;height:auto;display:block;object-fit:contain;" />
       </div>
       <div style="padding:16px 24px 24px;">
         <div style="display:flex;align-items:center;gap:8px;margin:0 0 16px;">
@@ -1336,7 +1336,7 @@ async function runAudit() {
   ` : ''}
 
   <!-- Premium Footer -->
-  <div style="margin: 32px 24px 24px; background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; display: flex; justify-content: space-between; align-items: center; break-inside: avoid; page-break-inside: avoid;">
+  <div style="margin-top: 32px; background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border-top: 1px solid #e2e8f0; padding: 24px; display: flex; justify-content: space-between; align-items: center; break-inside: avoid; page-break-inside: avoid;">
     <div style="font-size: 14px; color: #475569;">
       Designed & built with <span style="color:#ef4444">❤️</span> by 
       <a href="https://in.linkedin.com/in/soumyaux/" target="_blank" style="color:#0f5ec4; font-weight: 700; text-decoration: none;">Soumya</a>
