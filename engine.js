@@ -1,6 +1,10 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 
+// Single source of truth for issue highlight colors.
+// Used in BOTH screenshot overlay and PDF issue cards so numbers always match colors.
+const ISSUE_PALETTE = ['#3B82F6', '#EC4899', '#F97316', '#10B981', '#8B5CF6', '#EF4444', '#14B8A6'];
+
 if (!fs.existsSync('playwright-report')) {
   fs.mkdirSync('playwright-report');
 }
@@ -87,10 +91,21 @@ async function runAudit() {
 
     // ── FULL ENVIRONMENT NORMALIZATION ──
     console.log('⏳ Normalizing environment...');
-    
+
     // 1. Wait for ALL web fonts to finish loading
     await page.evaluate(() => document.fonts.ready);
     console.log('🔤 Fonts loaded.');
+
+    // Detect if the site uses a responsive viewport meta tag.
+    // If Figma frame width ≠ standard desktop (1440px), there may be
+    // scaling differences between the design and what we render.
+    const isResponsive = await page.evaluate(() => {
+      const meta = document.querySelector('meta[name="viewport"]');
+      return !!(meta && meta.content && meta.content.includes('width=device-width'));
+    });
+    if (isResponsive && frameWidth !== 1440) {
+      console.log(`⚠️ Responsive site detected at non-standard width (${frameWidth}px). Some spacing/text differences may be due to responsive scaling.`);
+    }
     
     // 2. Freeze ALL animations, transitions, and hide dynamic overlays
     await page.addStyleTag({ content: `
@@ -115,8 +130,12 @@ async function runAudit() {
     `});
 
 
-    // 4. Scroll to trigger lazy loading, then scroll back (optimized timings)
-    await page.waitForTimeout(500);
+    // 4. Multi-pass scroll to trigger all lazy-loaded content (images, deferred components)
+    await page.waitForTimeout(300);
+    await page.evaluate(() => window.scrollTo(0, Math.floor(document.body.scrollHeight / 3)));
+    await page.waitForTimeout(200);
+    await page.evaluate(() => window.scrollTo(0, Math.floor((document.body.scrollHeight * 2) / 3)));
+    await page.waitForTimeout(200);
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await page.waitForTimeout(300);
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -207,18 +226,22 @@ async function runAudit() {
         if ((design.w || 0) < 20 && (design.h || 0) < 20) return;
 
         // Skip image/decorative Figma tokens from Missing Element detection
-        // These are visual fills (RECTANGLE with image, icons, illustrations) that
-        // often don't map 1:1 to a DOM element at exact pixel coordinates
+        // Only skip if the layer name indicates a decorative element, OR if it is a pure geometry type.
+        // RECTANGLEs and ELLIPSEs that represent real UI components (buttons, cards) are kept.
         const lowerName = name.toLowerCase();
-        const isImageOrDecor = lowerName.includes('image') || lowerName.includes('img') ||
+        const hasDecorativeName = lowerName.includes('image') || lowerName.includes('img') ||
             lowerName.includes('photo') || lowerName.includes('icon') ||
             lowerName.includes('illustration') || lowerName.includes('logo') ||
             lowerName.includes('vector') || lowerName.includes('bitmap') ||
             lowerName.includes('mask') || lowerName.includes('clip') ||
-            design.type === 'RECTANGLE' || design.type === 'ELLIPSE' ||
-            design.type === 'VECTOR' || design.type === 'BOOLEAN_OPERATION' ||
-            design.type === 'STAR' || design.type === 'LINE' ||
-            design.type === 'POLYGON';
+            lowerName.includes('divider') || lowerName.includes('separator') ||
+            lowerName === 'bg' || lowerName.endsWith(' bg') || lowerName.startsWith('bg ') ||
+            lowerName.includes('background') || lowerName.includes('decor');
+        const isPureShape = design.type === 'VECTOR' || design.type === 'BOOLEAN_OPERATION' ||
+            design.type === 'STAR' || design.type === 'LINE' || design.type === 'POLYGON';
+        // RECTANGLE/ELLIPSE only treated as decorative when ALSO named as decorative
+        const isImageOrDecor = hasDecorativeName || isPureShape ||
+            ((design.type === 'RECTANGLE' || design.type === 'ELLIPSE') && hasDecorativeName);
         
         const cx = (design.x || 0) + (design.w || 0) / 2;
         const cy = (design.y || 0) + (design.h || 0) / 2;
@@ -746,12 +769,24 @@ async function runAudit() {
         for (const box of finalClusters) {
           let bestToken = null;
           let bestIoU = 0;
-          
+
           for (const token of designTokens) {
             // Skip container tokens — they cover entire sections and match everything
             if (token.role === 'container') continue;
             // Skip tiny spacers
             if ((token.w || 0) < 15 && (token.h || 0) < 15) continue;
+            // Skip purely decorative shape tokens — visual diffs on decorative fills are noise
+            const tName = (token.name || '').toLowerCase();
+            const tIsDecor = tName.includes('image') || tName.includes('img') || tName.includes('icon') ||
+                tName.includes('logo') || tName.includes('photo') || tName.includes('illustration') ||
+                tName === 'bg' || tName.endsWith(' bg') || tName.startsWith('bg ') ||
+                tName.includes('background') || tName.includes('divider') || tName.includes('separator') ||
+                token.type === 'VECTOR' || token.type === 'BOOLEAN_OPERATION' ||
+                token.type === 'STAR' || token.type === 'LINE' || token.type === 'POLYGON' ||
+                ((token.type === 'RECTANGLE' || token.type === 'ELLIPSE') &&
+                 (tName.includes('bg') || tName.includes('background') || tName.includes('decor') ||
+                  tName.includes('fill') || tName.includes('shape')));
+            if (tIsDecor) continue;
             
             const tx = token.x || 0, ty = token.y || 0;
             const tw = token.w || 0, th = token.h || 0;
@@ -778,8 +813,19 @@ async function runAudit() {
             }
           }
           
-          // Require meaningful overlap (IoU > 0.08) to consider it a real match
-          if (bestToken && bestIoU > 0.08) {
+          // Require meaningful overlap to consider it a real match.
+          // EITHER high IoU (>0.25) OR moderate IoU where cluster center falls inside the token.
+          // This prevents live-only elements (cookie banners, sticky headers) from being
+          // falsely attributed to nearby Figma tokens via low-overlap matches.
+          const clusterCX = box.x + box.w / 2;
+          const clusterCY = box.y + box.h / 2;
+          const bestTx = bestToken ? (bestToken.x || 0) : 0;
+          const bestTy = bestToken ? (bestToken.y || 0) : 0;
+          const bestTw = bestToken ? (bestToken.w || 0) : 0;
+          const bestTh = bestToken ? (bestToken.h || 0) : 0;
+          const centerInToken = clusterCX >= bestTx && clusterCX <= bestTx + bestTw &&
+                                clusterCY >= bestTy && clusterCY <= bestTy + bestTh;
+          if (bestToken && (bestIoU > 0.25 || (bestIoU > 0.08 && centerInToken))) {
             figmaMatchedClusters.push(box);
             // Use the Figma layer name (last path segment)
             const rawName = bestToken.name || 'unknown';
@@ -940,8 +986,7 @@ async function runAudit() {
         const chunkEnd = i === maxScreenshots - 1 ? allIssues.length : chunkStart + issuesPerScreen;
         const issueChunk = allIssues.slice(chunkStart, chunkEnd);
 
-        await page.evaluate((issues) => {
-            const palette = ['#3B82F6', '#EC4899', '#F97316', '#10B981', '#8B5CF6', '#EF4444', '#14B8A6'];
+        await page.evaluate((issues, palette) => {
             const placedBadges = [];
 
             issues.forEach(issue => {
@@ -1000,7 +1045,7 @@ async function runAudit() {
                 numBadge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
                 document.body.appendChild(numBadge);
             });
-        }, issueChunk);
+        }, issueChunk, ISSUE_PALETTE);
 
         const path = `playwright-report/screenshot-chunk-${i+1}.png`;
         // Full-page screenshot: capture from y=0 to bottom of last issue (+ padding)
@@ -1034,10 +1079,9 @@ async function runAudit() {
     const auditDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
     // 3. Build paired Audit View + Issue blocks
-    const palette = ['#3B82F6', '#EC4899', '#F97316', '#10B981', '#8B5CF6', '#EF4444', '#14B8A6'];
     
     function buildIssueCard(issue) {
-      const color = palette[(issue.issueNum - 1) % palette.length];
+      const color = ISSUE_PALETTE[(issue.issueNum - 1) % ISSUE_PALETTE.length];
       const detailRows = issue.details.map(d => {
         const parts = d.split(':');
         if (parts.length >= 2) {
@@ -1107,7 +1151,7 @@ async function runAudit() {
         <div style="white-space:nowrap;">📅 <strong>Date:</strong> ${auditDate}</div>
       </div>
 
-      <div>📐 <strong>Viewport:</strong> ${frameWidth}&times;${frameHeight}px</div>
+      <div>📐 <strong>Viewport:</strong> ${frameWidth}&times;${frameHeight}px${isResponsive ? ` <span style="background:rgba(255,200,0,0.25);color:#fff;padding:2px 10px;border-radius:4px;font-size:11px;margin-left:8px;border:1px solid rgba(255,255,255,0.3);">⚠️ Responsive site — audit at Figma frame width (${frameWidth}px). If your Figma frame is 1920px but site renders at 1440px, text/gap values may differ by design.</span>` : ''}</div>
     </div>
     <div style="display:flex;gap:16px;margin-top:24px;">
       <div style="background:rgba(255,255,255,0.15);padding:14px 22px;border-radius:12px;text-align:center;">
