@@ -495,7 +495,7 @@ async function runAudit() {
               type: 'LAYOUT_SHIFT',
               element: elName,
               details: layoutErrors,
-              rect: { x: Math.round(design.x || rect.left), y: Math.round(design.y || rect.top), w: Math.round(design.w || rect.width), h: Math.round(design.h || rect.height) }
+              rect: { x: Math.round(rect.left + (window.scrollX || 0) || design.x || 0), y: Math.round(rect.top + (window.scrollY || 0) || design.y || 0), w: Math.round(rect.width || design.w || 50), h: Math.round(rect.height || design.h || 50) }
             });
           }
           if (styleErrors.length > 0) {
@@ -505,7 +505,7 @@ async function runAudit() {
               type: 'MINOR_DIFF',
               element: elName,
               details: styleErrors,
-              rect: { x: Math.round(design.x || rect.left), y: Math.round(design.y || rect.top), w: Math.round(design.w || rect.width), h: Math.round(design.h || rect.height) }
+              rect: { x: Math.round(rect.left + (window.scrollX || 0) || design.x || 0), y: Math.round(rect.top + (window.scrollY || 0) || design.y || 0), w: Math.round(rect.width || design.w || 50), h: Math.round(rect.height || design.h || 50) }
             });
           }
         } else {
@@ -966,10 +966,7 @@ async function runAudit() {
     console.log('📱 Running responsive breakpoint checks...');
 
     const ALL_BREAKPOINTS = [
-      { width: 1280, label: 'Desktop (1280px)' },
-      { width: 1024, label: 'Tablet Landscape (1024px)' },
-      { width: 768,  label: 'Tablet Portrait (768px)' },
-      { width: 375,  label: 'Mobile (375px)' },
+      { width: 375, label: 'Mobile (375px)' },
     ];
     const activeBreakpoints = ALL_BREAKPOINTS.filter(bp => bp.width < frameWidth);
     const responsiveIssuesByBreakpoint = [];
@@ -1191,7 +1188,7 @@ async function runAudit() {
           return { width: Math.min(cropWidth, 3000), height: Math.min(cropHeight, 5000) };
         }, issueChunk);
         
-        await page.screenshot({ path, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
+        await page.screenshot({ path, fullPage: true, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
         const buffer = fs.readFileSync(path);
         screenshotPaths.push(buffer.toString('base64'));
     }
