@@ -94,31 +94,22 @@ async function runAudit() {
     // ── FULL ENVIRONMENT NORMALIZATION ──
     console.log('⏳ Normalizing environment...');
 
-    // 1. Wait for ALL web fonts and stylesheets to finish loading
-    await page.evaluate(() => document.fonts.ready);
-    await page.waitForTimeout(500);
-    console.log('🔤 Fonts loaded.');
-
-    // Detect if the site uses a responsive viewport meta tag
-    const isResponsive = await page.evaluate(() => {
-      const meta = document.querySelector('meta[name="viewport"]');
-      return !!(meta && meta.content && meta.content.includes('width=device-width'));
+    // 1. Wait for ALL stylesheets to parse and fonts to load
+    await page.evaluate(async () => {
+      // Wait for all <link rel="stylesheet"> to finish loading
+      const links = Array.from(document.querySelectorAll('link[rel="stylesheet"]'));
+      await Promise.all(links.map(link => {
+        if (link.sheet) return Promise.resolve();
+        return new Promise(resolve => {
+          link.addEventListener('load', resolve);
+          link.addEventListener('error', resolve);
+          setTimeout(resolve, 3000); // 3s timeout per stylesheet
+        });
+      }));
+      await document.fonts.ready;
     });
-
-    // For non-responsive (fixed-width) sites, clamp viewport to actual content width
-    // to avoid artificial side spacing when Figma frame is wider than the site
-    if (!isResponsive) {
-      const actualWidth = await page.evaluate(() => {
-        const body = document.body;
-        const main = document.querySelector('main') || document.querySelector('#root') || document.querySelector('#app') || body;
-        return Math.max(body.scrollWidth, main.scrollWidth || 0);
-      });
-      if (actualWidth > 0 && actualWidth < frameWidth * 0.9) {
-        console.log(`📐 Non-responsive site: content width ${actualWidth}px < frame ${frameWidth}px. Clamping viewport.`);
-        await page.setViewportSize({ width: actualWidth, height: frameHeight });
-        await page.waitForTimeout(300);
-      }
-    }
+    await page.waitForTimeout(500);
+    console.log('🔤 Stylesheets & fonts loaded.');
 
     // 2. Freeze ALL animations, transitions, and hide dynamic overlays
     await page.addStyleTag({ content: `
@@ -504,15 +495,20 @@ async function runAudit() {
           
           tokenFailures++;
           
-          // Prefer Figma token dimensions for precise highlighting; fall back to DOM rect
+          // Use DOM position (accurate on live page) but cap size with Figma dimensions
+          // to avoid oversized boxes when DOM element is a large container
+          let rw = Math.round(rect.width || design.w || 50);
+          let rh = Math.round(rect.height || design.h || 50);
+          if (design.w > 5 && rw > design.w * 2) rw = Math.round(design.w);
+          if (design.h > 5 && rh > design.h * 2) rh = Math.round(design.h);
           const issueRect = {
-            x: Math.round(design.x != null ? design.x : (rect.left + (window.scrollX || 0))),
-            y: Math.round(design.y != null ? design.y : (rect.top + (window.scrollY || 0))),
-            w: Math.round(design.w && design.w > 5 ? design.w : (rect.width || 50)),
-            h: Math.round(design.h && design.h > 5 ? design.h : (rect.height || 50))
+            x: Math.round(rect.left + (window.scrollX || 0)),
+            y: Math.round(rect.top + (window.scrollY || 0)),
+            w: rw,
+            h: rh
           };
 
-          // Skip container-level matches (too large to be a real element issue)
+          // Skip container-level matches
           if (issueRect.w > window.innerWidth * 0.4 && issueRect.h > 300) return;
 
           if (layoutErrors.length > 0) {
@@ -853,24 +849,12 @@ async function runAudit() {
           const centerInToken = clusterCX >= bestTx && clusterCX <= bestTx + bestTw &&
                                 clusterCY >= bestTy && clusterCY <= bestTy + bestTh;
           if (bestToken && (bestIoU > 0.25 || (bestIoU > 0.15 && centerInToken))) {
-            // Use Figma token bounds for precise highlighting instead of inflated cluster box
-            const tokenRect = {
-                x: Math.round(bestToken.x || 0),
-                y: Math.round(bestToken.y || 0),
-                w: Math.round(bestToken.w || 50),
-                h: Math.round(bestToken.h || 50)
-            };
-            if (bestIoU > 0.25) {
-                // Strong match: use token bounds directly
-                figmaMatchedClusters.push(tokenRect);
-            } else {
-                // Weak match: use intersection rect + 4px padding
-                const ix1 = Math.max(box.x, tokenRect.x) - 4;
-                const iy1 = Math.max(box.y, tokenRect.y) - 4;
-                const ix2 = Math.min(box.x + box.w, tokenRect.x + tokenRect.w) + 4;
-                const iy2 = Math.min(box.y + box.h, tokenRect.y + tokenRect.h) + 4;
-                figmaMatchedClusters.push({ x: ix1, y: iy1, w: ix2 - ix1, h: iy2 - iy1 });
-            }
+            // Use cluster position (accurate on live page) but cap size with Figma token
+            const tw = Math.round(bestToken.w || 50);
+            const th = Math.round(bestToken.h || 50);
+            const cappedW = box.w > tw * 2 ? tw : box.w;
+            const cappedH = box.h > th * 2 ? th : box.h;
+            figmaMatchedClusters.push({ x: box.x, y: box.y, w: cappedW, h: cappedH });
             // Use the Figma layer name (last 2 path segments for better context)
             const rawName = bestToken.name || 'unknown';
             const segments = rawName.split('/').map(s => s.trim()).filter(Boolean);
