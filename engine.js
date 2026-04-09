@@ -494,6 +494,13 @@ async function runAudit() {
           }
         }
 
+        // Reclassify style errors where live uses CSS var → token sync issue (yellow pill)
+        const _p2c = {'Text Color':'color','Background Color':'background-color','Font Size':'font-size','Font Family':'font-family','Font Weight':'font-weight','Border Radius':'border-radius','Border Color':'border-color','Border Width':'border-width','Opacity':'opacity'};
+        for (let _i = 0; _i < errors.length; _i++) {
+          const _css = _p2c[errors[_i]];
+          if (_css && hasCSSVarForProperty(el, _css)) errors[_i] = '~' + errors[_i];
+        }
+
         if (errors.length > 0) {
           // === DEDUP: check if this DOM element was already reported ===
           // Use a unique key based on element tag + position to detect same element
@@ -540,7 +547,7 @@ async function runAudit() {
             const idx = results.length;
             if (!seenElements.has(elKey)) seenElements.set(elKey, idx);
             results.push({
-              type: 'MINOR_DIFF',
+              type: styleErrors.some(e => !e.startsWith('~')) ? 'MINOR_DIFF' : 'TOKEN_UNCONNECTED',
               element: elName,
               details: styleErrors,
               rect: issueRect
@@ -1267,7 +1274,6 @@ async function runAudit() {
     // 3. Build paired Audit View + Issue blocks
     
     function buildIssueCard(issue) {
-      const isUnconnected = issue.type === 'TOKEN_UNCONNECTED';
       const color = ISSUE_PALETTE[(issue.issueNum - 1) % ISSUE_PALETTE.length];
       const r = parseInt(color.slice(1, 3), 16);
       const g = parseInt(color.slice(3, 5), 16);
@@ -1283,7 +1289,9 @@ async function runAudit() {
             <span style="text-align:right;background:#ffffff;padding:4px 8px;border-radius:6px;border:1px solid #e2e8f0;font-family:monospace;letter-spacing:-0.2px;box-shadow:0 1px 2px rgba(0,0,0,0.02);color:#334155;">${val}</span>
           </div>`;
         }
-        return `<span style="display:inline-flex;align-items:center;background:${isUnconnected ? '#fffbeb' : '#f8fafc'};border:1px solid ${isUnconnected ? '#fde68a' : '#e2e8f0'};padding:6px 14px;border-radius:20px;font-size:12.5px;color:${isUnconnected ? '#92400e' : '#475569'};font-weight:500;letter-spacing:-0.1px;box-shadow:0 1px 2px rgba(0,0,0,0.02);">${d}</span>`;
+        const isYellow = d.startsWith('~') || issue.type === 'TOKEN_UNCONNECTED';
+        const label = d.startsWith('~') ? d.slice(1) : d;
+        return `<span style="display:inline-flex;align-items:center;background:${isYellow ? '#fffbeb' : '#f8fafc'};border:1px solid ${isYellow ? '#fde68a' : '#e2e8f0'};padding:6px 14px;border-radius:20px;font-size:12.5px;color:${isYellow ? '#92400e' : '#475569'};font-weight:500;letter-spacing:-0.1px;box-shadow:0 1px 2px rgba(0,0,0,0.02);">${label}</span>`;
       }).join('');
       
       const hasLegacyRows = issue.details.some(d => d.includes(':'));
@@ -1379,29 +1387,6 @@ async function runAudit() {
     </div>
   </div>
   ${auditSections}
-  ${responsiveIssuesByBreakpoint.length > 0 ? `
-  <div style="padding:16px 24px 8px;">
-    <h2 style="font-size:15px;color:#0f1b35;margin:0 0 4px;">📱 Responsive Breakpoint Check</h2>
-    <p style="font-size:12px;color:#64748b;margin:0 0 12px;">Issues found when the page is resized to smaller viewports.</p>
-    ${responsiveIssuesByBreakpoint.map(bp => `
-      <div style="margin-bottom:14px;">
-        <div style="font-size:13px;font-weight:700;color:#0f1b35;margin-bottom:8px;padding:6px 12px;background:#f1f5f9;border-radius:6px;">
-          ${bp.label}
-          <span style="font-weight:400;color:#64748b;margin-left:8px;">${bp.issues.length} issue${bp.issues.length !== 1 ? 's' : ''}</span>
-        </div>
-        ${bp.issues.map(issue => `
-          <div style="display:flex;gap:10px;padding:10px 14px;margin:0 0 6px;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.05);border-left:4px solid ${issue.issueType === 'overflow' ? '#EF4444' : issue.issueType === 'clipped' ? '#F97316' : issue.issueType === 'offscreen' ? '#8B5CF6' : '#EC4899'};break-inside:avoid;">
-            <div style="font-size:20px;line-height:1;">${issue.issueType === 'overflow' ? '↔️' : issue.issueType === 'clipped' ? '✂️' : issue.issueType === 'offscreen' ? '🚫' : '⚠️'}</div>
-            <div>
-              <div style="font-weight:700;font-size:13px;color:#0f1b35;">${issue.label}</div>
-              <div style="font-size:12px;color:#64748b;margin-top:2px;">${issue.detail}</div>
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    `).join('')}
-  </div>
-  ` : ''}
 
   <!-- Premium Footer -->
   <div style="margin: 32px 24px 24px; background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; display: flex; justify-content: space-between; align-items: center; break-inside: avoid; page-break-inside: avoid;">
