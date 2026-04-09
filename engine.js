@@ -217,6 +217,27 @@ async function runAudit() {
         return 'Component';
       }
 
+      // Cache all stylesheet rules once — avoids repeated DOM walk per token
+      const _cachedSheetRules = [];
+      for (const sheet of document.styleSheets) {
+        try { _cachedSheetRules.push(...Array.from(sheet.cssRules || [])); } catch(e) {}
+      }
+      function hasCSSVarForProperty(el, cssProperty) {
+        try {
+          const inlineVal = el.style.getPropertyValue(cssProperty);
+          if (inlineVal && inlineVal.trim().startsWith('var(')) return true;
+          for (const rule of _cachedSheetRules) {
+            try {
+              if (rule.selectorText && el.matches(rule.selectorText)) {
+                const val = rule.style?.getPropertyValue(cssProperty);
+                if (val && val.trim().startsWith('var(')) return true;
+              }
+            } catch(e) {}
+          }
+        } catch(e) {}
+        return false;
+      }
+
       const results = [];
       let tokenFailures = 0;
       // === DEDUPLICATION: Track DOM elements already checked ===
@@ -526,7 +547,40 @@ async function runAudit() {
             });
           }
         } else {
-          results.push({ type: 'TOKEN_PASS', element: elName });
+          // Values match — check if CSS design token variables are actually being used
+          const cssPropsToCheck = [];
+          if (design.color && (role === 'text' || design.fs))
+            cssPropsToCheck.push({ css: 'color', label: 'Text Color' });
+          if (design.bg?.[0] && role !== 'text')
+            cssPropsToCheck.push({ css: 'background-color', label: 'Background' });
+          if (design.fs && design.fs !== 'Mixed')
+            cssPropsToCheck.push({ css: 'font-size', label: 'Font Size' });
+          if (design.ff && design.ff !== 'Mixed')
+            cssPropsToCheck.push({ css: 'font-family', label: 'Font Family' });
+
+          const noneUseVars = cssPropsToCheck.length > 0
+            && cssPropsToCheck.every(p => !hasCSSVarForProperty(el, p.css));
+
+          if (noneUseVars) {
+            const ucRect = {
+              x: Math.round(rect.left + (window.scrollX || 0)),
+              y: Math.round(rect.top + (window.scrollY || 0)),
+              w: Math.round(rect.width || design.w || 50),
+              h: Math.round(rect.height || design.h || 50)
+            };
+            if (ucRect.w > window.innerWidth * 0.4 && ucRect.h > 300) {
+              results.push({ type: 'TOKEN_PASS', element: elName });
+            } else {
+              results.push({
+                type: 'TOKEN_UNCONNECTED',
+                element: elName,
+                details: cssPropsToCheck.map(p => p.label),
+                rect: ucRect
+              });
+            }
+          } else {
+            results.push({ type: 'TOKEN_PASS', element: elName });
+          }
         }
       });
       return results;
@@ -935,8 +989,9 @@ async function runAudit() {
       return true;
     });
     
-    let allIssues = [...tokenMinor, ...tokenLayout, ...filteredVisual];
-    
+    const tokenUnconnected = tokenReport.filter(r => r.type === 'TOKEN_UNCONNECTED');
+    let allIssues = [...tokenMinor, ...tokenLayout, ...filteredVisual, ...tokenUnconnected];
+
     // Sort issues top-to-bottom (by Y position), and left-to-right (by X position) for natural reading order
     allIssues.sort((a, b) => {
         if (Math.abs(a.rect.y - b.rect.y) > 10) return a.rect.y - b.rect.y;
@@ -955,7 +1010,7 @@ async function runAudit() {
     const visualMatchScore = pixelMatchPercent;
     let totalErrorsFound = 0;
     allIssues.forEach(i => {
-        if (i.type !== 'MAJOR_VISUAL' && i.details) totalErrorsFound += i.details.length;
+        if (i.type !== 'MAJOR_VISUAL' && i.type !== 'TOKEN_UNCONNECTED' && i.details) totalErrorsFound += i.details.length;
     });
 
     // Dynamically scale total rules evaluated to accurately reflect the volume of tokens vs volume of errors.
@@ -1127,6 +1182,7 @@ async function runAudit() {
             const placedBadges = [];
 
             issues.forEach(issue => {
+                const isUnconnected = issue.type === 'TOKEN_UNCONNECTED';
                 const color = palette[(issue.issueNum - 1) % palette.length];
                 const bx = Math.max(0, issue.rect.x - 6);
                 const by = Math.max(0, issue.rect.y - 6);
@@ -1139,7 +1195,7 @@ async function runAudit() {
                 const r = parseInt(color.slice(1, 3), 16);
                 const g = parseInt(color.slice(3, 5), 16);
                 const b = parseInt(color.slice(5, 7), 16);
-                box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:3px solid ${color};background:rgba(${r},${g},${b},0.12);border-radius:4px;`;
+                box.style.cssText = `position:absolute;z-index:10000;pointer-events:none;top:${by}px;left:${bx}px;width:${bw}px;height:${bh}px;border:${isUnconnected ? '2px dashed' : '3px solid'} ${color};background:${isUnconnected ? 'rgba(245,158,11,0.08)' : `rgba(${r},${g},${b},0.12)`};border-radius:4px;`;
                 document.body.appendChild(box);
 
                 let badgeX = bx - 14;
@@ -1211,11 +1267,12 @@ async function runAudit() {
     // 3. Build paired Audit View + Issue blocks
     
     function buildIssueCard(issue) {
+      const isUnconnected = issue.type === 'TOKEN_UNCONNECTED';
       const color = ISSUE_PALETTE[(issue.issueNum - 1) % ISSUE_PALETTE.length];
       const r = parseInt(color.slice(1, 3), 16);
       const g = parseInt(color.slice(3, 5), 16);
       const b = parseInt(color.slice(5, 7), 16);
-      
+
       const detailRows = issue.details.map(d => {
         const parts = d.split(':');
         if (parts.length >= 2) {
@@ -1226,7 +1283,7 @@ async function runAudit() {
             <span style="text-align:right;background:#ffffff;padding:4px 8px;border-radius:6px;border:1px solid #e2e8f0;font-family:monospace;letter-spacing:-0.2px;box-shadow:0 1px 2px rgba(0,0,0,0.02);color:#334155;">${val}</span>
           </div>`;
         }
-        return `<span style="display:inline-flex;align-items:center;background:#f8fafc;border:1px solid #e2e8f0;padding:6px 14px;border-radius:20px;font-size:12.5px;color:#475569;font-weight:500;letter-spacing:-0.1px;box-shadow:0 1px 2px rgba(0,0,0,0.02);">${d}</span>`;
+        return `<span style="display:inline-flex;align-items:center;background:${isUnconnected ? '#fffbeb' : '#f8fafc'};border:1px solid ${isUnconnected ? '#fde68a' : '#e2e8f0'};padding:6px 14px;border-radius:20px;font-size:12.5px;color:${isUnconnected ? '#92400e' : '#475569'};font-weight:500;letter-spacing:-0.1px;box-shadow:0 1px 2px rgba(0,0,0,0.02);">${d}</span>`;
       }).join('');
       
       const hasLegacyRows = issue.details.some(d => d.includes(':'));
@@ -1308,6 +1365,17 @@ async function runAudit() {
         <div style="font-size:28px;font-weight:800;">${allIssues.length}</div>
         <div style="font-size:11px;">Issues Found</div>
       </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:16px;margin-top:14px;padding:8px 14px;background:rgba(255,255,255,0.12);border-radius:8px;font-size:11px;color:rgba(255,255,255,0.9);">
+      <span style="font-weight:600;letter-spacing:0.3px;opacity:0.7;text-transform:uppercase;">Legend</span>
+      <span style="display:flex;align-items:center;gap:6px;">
+        <span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:#f8fafc;border:1px solid #e2e8f0;flex-shrink:0;"></span>
+        Grey pill — value mismatch
+      </span>
+      <span style="display:flex;align-items:center;gap:6px;">
+        <span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:#fffbeb;border:1px solid #fde68a;flex-shrink:0;"></span>
+        Yellow pill — values match, token not connected
+      </span>
     </div>
   </div>
   ${auditSections}
