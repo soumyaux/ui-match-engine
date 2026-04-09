@@ -108,7 +108,7 @@ async function runAudit() {
       }));
       await document.fonts.ready;
     });
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(300);
     console.log('🔤 Stylesheets & fonts loaded.');
 
     // 2. Freeze ALL animations, transitions, and hide dynamic overlays
@@ -135,15 +135,15 @@ async function runAudit() {
 
 
     // 4. Multi-pass scroll to trigger all lazy-loaded content (images, deferred components)
-    await page.waitForTimeout(800);
-    await page.evaluate(() => window.scrollTo(0, Math.floor(document.body.scrollHeight / 3)));
-    await page.waitForTimeout(200);
-    await page.evaluate(() => window.scrollTo(0, Math.floor((document.body.scrollHeight * 2) / 3)));
-    await page.waitForTimeout(200);
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await page.waitForTimeout(300);
-    await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(500);
+    await page.evaluate(() => window.scrollTo(0, Math.floor(document.body.scrollHeight / 3)));
+    await page.waitForTimeout(150);
+    await page.evaluate(() => window.scrollTo(0, Math.floor((document.body.scrollHeight * 2) / 3)));
+    await page.waitForTimeout(150);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(200);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(300);
     console.log('✅ Environment normalized — fonts loaded, animations frozen, dynamic content hidden.');
 
     // ══════════════════════════════════════════
@@ -252,7 +252,7 @@ async function runAudit() {
         try { _cachedSheetRules.push(...Array.from(sheet.cssRules || [])); } catch(e) {}
       }
       const _inheritableProps = new Set(['color','font-size','font-family','font-weight','letter-spacing','line-height','text-align','text-decoration','text-transform','opacity']);
-      function hasCSSVarForProperty(el, cssProperty) {
+      function hasCSSVarForProperty(el, cssProperty, checkAncestors) {
         const _check = (node) => {
           try {
             const inlineVal = node.style.getPropertyValue(cssProperty);
@@ -269,7 +269,7 @@ async function runAudit() {
           return false;
         };
         if (_check(el)) return true;
-        if (_inheritableProps.has(cssProperty)) {
+        if (checkAncestors !== false && _inheritableProps.has(cssProperty)) {
           let parent = el.parentElement;
           while (parent && parent !== document.body) {
             if (_check(parent)) return true;
@@ -607,7 +607,7 @@ async function runAudit() {
             cssPropsToCheck.push({ css: 'font-family', label: 'Font Family' });
 
           const noneUseVars = cssPropsToCheck.length > 0
-            && cssPropsToCheck.every(p => !hasCSSVarForProperty(el, p.css));
+            && cssPropsToCheck.every(p => !hasCSSVarForProperty(el, p.css, false));
 
           if (noneUseVars) {
             const ucRect = {
@@ -647,8 +647,8 @@ async function runAudit() {
         color: transparent !important;
       }
     `});
-    await page.waitForTimeout(200);
-    
+    await page.waitForTimeout(100);
+
     const liveScreenshotBuffer = await page.screenshot({ fullPage: true });
     fs.writeFileSync('playwright-report/live-screenshot.png', liveScreenshotBuffer);
 
@@ -1090,8 +1090,8 @@ async function runAudit() {
         if (s.textContent.includes('brightness(0)')) s.remove();
       });
     });
-    await page.waitForTimeout(200);
-    
+    await page.waitForTimeout(100);
+
     const maxScreenshots = Math.min(2, Math.ceil(allIssues.length / 8));
     const issuesPerScreen = Math.ceil(allIssues.length / Math.max(1, maxScreenshots));
     console.log(`📸 Generating ${maxScreenshots} screenshot(s)...`);
