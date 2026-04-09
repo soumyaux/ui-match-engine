@@ -222,19 +222,31 @@ async function runAudit() {
       for (const sheet of document.styleSheets) {
         try { _cachedSheetRules.push(...Array.from(sheet.cssRules || [])); } catch(e) {}
       }
+      const _inheritableProps = new Set(['color','font-size','font-family','font-weight','letter-spacing','line-height','text-align','text-decoration','text-transform','opacity']);
       function hasCSSVarForProperty(el, cssProperty) {
-        try {
-          const inlineVal = el.style.getPropertyValue(cssProperty);
-          if (inlineVal && inlineVal.trim().startsWith('var(')) return true;
-          for (const rule of _cachedSheetRules) {
-            try {
-              if (rule.selectorText && el.matches(rule.selectorText)) {
-                const val = rule.style?.getPropertyValue(cssProperty);
-                if (val && val.trim().startsWith('var(')) return true;
-              }
-            } catch(e) {}
+        const _check = (node) => {
+          try {
+            const inlineVal = node.style.getPropertyValue(cssProperty);
+            if (inlineVal && inlineVal.trim().startsWith('var(')) return true;
+            for (const rule of _cachedSheetRules) {
+              try {
+                if (rule.selectorText && node.matches(rule.selectorText)) {
+                  const val = rule.style?.getPropertyValue(cssProperty);
+                  if (val && val.trim().startsWith('var(')) return true;
+                }
+              } catch(e) {}
+            }
+          } catch(e) {}
+          return false;
+        };
+        if (_check(el)) return true;
+        if (_inheritableProps.has(cssProperty)) {
+          let parent = el.parentElement;
+          while (parent && parent !== document.body) {
+            if (_check(parent)) return true;
+            parent = parent.parentElement;
           }
-        } catch(e) {}
+        }
         return false;
       }
 
