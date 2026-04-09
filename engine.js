@@ -451,10 +451,11 @@ async function runAudit() {
               errors.push('Line Height');
             }
           }
-          if (design.ta && design.ta !== 'Mixed') {
+          if (design.ta && design.ta !== 'Mixed' && design.ta.toLowerCase() !== 'left') {
             const ta = design.ta.toLowerCase();
             const expected = ta === 'justified' ? 'justify' : ta;
-            if (live.textAlign !== expected) errors.push('Text Align');
+            const liveTA = live.textAlign === 'start' ? 'left' : live.textAlign === 'end' ? 'right' : live.textAlign;
+            if (liveTA !== expected) errors.push('Text Align');
           }
           if (design.td && design.td !== 'Mixed') {
             const expected = design.td === 'strikethrough' ? 'line-through' : design.td;
