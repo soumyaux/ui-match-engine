@@ -158,13 +158,42 @@ async function runAudit() {
       function parseColorBrowser(raw) {
         if (!raw) return null;
         const s = String(raw).trim().toLowerCase();
-        if (s.startsWith('#')) return s;
-        const m = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-        if (m) {
-          const hex = (v) => Number(v).toString(16).padStart(2, '0');
-          return `#${hex(m[1])}${hex(m[2])}${hex(m[3])}`;
+        const h2 = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+        // Expand 3-digit hex shorthand (#fff → #ffffff)
+        if (s.startsWith('#')) {
+          if (s.length === 4) return '#' + s[1]+s[1]+s[2]+s[2]+s[3]+s[3];
+          return s;
         }
-        return s;
+        // rgb/rgba — comma or space separated
+        const rm = s.match(/rgba?\(\s*([\d.]+)\s*[, ]\s*([\d.]+)\s*[, ]\s*([\d.]+)/);
+        if (rm) return `#${h2(rm[1])}${h2(rm[2])}${h2(rm[3])}`;
+        // hsl/hsla — comma or space separated
+        const hm = s.match(/hsla?\(\s*([\d.]+)\s*[, ]\s*([\d.]+)%\s*[, ]\s*([\d.]+)%/);
+        if (hm) {
+          const h = parseFloat(hm[1]) / 360, sl = parseFloat(hm[2]) / 100, l = parseFloat(hm[3]) / 100;
+          const q = l < 0.5 ? l * (1 + sl) : l + sl - l * sl, p = 2 * l - q;
+          const hue = (t) => { t = ((t%1)+1)%1; return t<1/6 ? p+(q-p)*6*t : t<0.5 ? q : t<2/3 ? p+(q-p)*(2/3-t)*6 : p; };
+          return `#${h2(hue(h+1/3)*255)}${h2(hue(h)*255)}${h2(hue(h-1/3)*255)}`;
+        }
+        // oklch(L C H) — convert via OKLAB → linear sRGB → sRGB
+        const om = s.match(/oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)/);
+        if (om) {
+          const L = parseFloat(om[1]), C = parseFloat(om[2]), H = parseFloat(om[3]) * Math.PI / 180;
+          const a = C * Math.cos(H), b2 = C * Math.sin(H);
+          const l_ = (L+0.3963377774*a+0.2158037573*b2)**3, m_ = (L-0.1055613458*a-0.0638541728*b2)**3, s_ = (L-0.0894841775*a-1.2914855480*b2)**3;
+          const lin = (c) => c > 0.0031308 ? 1.055*c**(1/2.4)-0.055 : 12.92*c;
+          return `#${h2(lin(4.0767416621*l_-3.3077115913*m_+0.2309699292*s_)*255)}${h2(lin(-1.2684380046*l_+2.6097574011*m_-0.3413193965*s_)*255)}${h2(lin(-0.0041960863*l_-0.7034186147*m_+1.7076147010*s_)*255)}`;
+        }
+        // hwb(H W% B%)
+        const wm = s.match(/hwb\(\s*([\d.]+)\s+([\d.]+)%\s+([\d.]+)%/);
+        if (wm) {
+          const H = parseFloat(wm[1])/360, W = parseFloat(wm[2])/100, B = parseFloat(wm[3])/100;
+          if (W+B >= 1) { const g = Math.round(W/(W+B)*255); return `#${h2(g)}${h2(g)}${h2(g)}`; }
+          const hue = (t) => { t = ((t%1)+1)%1; return t<1/6 ? 6*t : t<0.5 ? 1 : t<2/3 ? (2/3-t)*6 : 0; };
+          const f = 1-W-B;
+          return `#${h2((hue(H+1/3)*f+W)*255)}${h2((hue(H)*f+W)*255)}${h2((hue(H-1/3)*f+W)*255)}`;
+        }
+        return null;
       }
       function colorsMatchBrowser(figmaHex, liveRaw) {
         const a = parseColorBrowser(figmaHex);
@@ -405,7 +434,7 @@ async function runAudit() {
               errors.push('Font Weight');
             }
           }
-          if (design.color) {
+          if (design.color && design.color !== 'Mixed') {
             if (!colorsMatchBrowser(design.color, live.color)) {
               errors.push('Text Color');
             }
@@ -933,7 +962,7 @@ async function runAudit() {
         // Capture crops for first 5 issues in parallel, then call Gemini in parallel.
         console.log('🤖 Calling AI Vision for smart visual analysis (parallel)...');
 
-        const AI_LIMIT = Math.min(5, figmaMatchedClusters.length);
+        const AI_LIMIT = Math.min(2, figmaMatchedClusters.length);
 
         // Capture all crops concurrently
         const cropBase64s = await Promise.all(
@@ -1052,126 +1081,6 @@ async function runAudit() {
       process.exit(1);
     }
 
-    // ══════════════════════════════════════════
-    // PHASE 4: RESPONSIVE BREAKPOINT CHECK
-    // ══════════════════════════════════════════
-    // Re-render at common breakpoints (only those narrower than the Figma frame)
-    // and check for real breakage: overflow, off-screen elements, text clipping.
-    console.log('📱 Running responsive breakpoint checks...');
-
-    const ALL_BREAKPOINTS = [
-      { width: 375, label: 'Mobile (375px)' },
-    ];
-    const activeBreakpoints = ALL_BREAKPOINTS.filter(bp => bp.width < frameWidth);
-    const responsiveIssuesByBreakpoint = [];
-
-    // Collect leaf tokens for position probing (skip containers and tiny spacers)
-    const leafTokens = designTokens.filter(t =>
-      t.role !== 'container' && (t.w || 0) >= 30 && (t.h || 0) >= 20
-    ).slice(0, 40); // cap at 40 to keep this fast
-
-    for (const bp of activeBreakpoints) {
-      await page.setViewportSize({ width: bp.width, height: 900 });
-      await page.waitForTimeout(300);
-
-      const bpIssues = await page.evaluate(({ tokens, bpWidth }) => {
-        const issues = [];
-
-        // 1. Horizontal overflow — the most common responsive bug
-        const scrollW = document.documentElement.scrollWidth;
-        const clientW = document.documentElement.clientWidth;
-        if (scrollW > clientW + 5) {
-          issues.push({
-            issueType: 'overflow',
-            label: 'Page has horizontal overflow',
-            detail: `Page content (${scrollW}px) is wider than the ${bpWidth}px viewport. Users will need to scroll sideways.`
-          });
-        }
-
-        // 2. Per-token checks
-        for (const token of tokens) {
-          const tokenName = (token.name || 'unknown').split('/').pop().trim();
-          // Clamp x to stay inside the narrower viewport
-          const cx = Math.min((token.x || 0) + (token.w || 0) / 2, bpWidth - 10);
-          const cy = (token.y || 0) + (token.h || 0) / 2;
-
-          const el = document.elementFromPoint(cx, cy);
-          if (!el || el === document.body || el === document.documentElement) continue;
-
-          const rect = el.getBoundingClientRect();
-          const style = window.getComputedStyle(el);
-          const tag = el.tagName.toUpperCase();
-
-          // Skip media elements — they legitimately change size
-          if (tag === 'IMG' || tag === 'VIDEO' || tag === 'CANVAS' || tag === 'SVG') continue;
-          if (el.closest?.('svg')) continue;
-
-          // 2a. Element is entirely off-screen to the right
-          if (rect.left > bpWidth + 10) {
-            issues.push({
-              issueType: 'offscreen',
-              label: `"${tokenName}" is off-screen`,
-              detail: `Element starts at ${Math.round(rect.left)}px — outside the ${bpWidth}px viewport.`
-            });
-            continue;
-          }
-
-          // 2b. Element content overflows its own box
-          if (el.scrollWidth > el.clientWidth + 8 && el.clientWidth > 0) {
-            issues.push({
-              issueType: 'overflow',
-              label: `"${tokenName}" content overflows`,
-              detail: `Element is ${el.clientWidth}px wide but its content is ${el.scrollWidth}px. Text or children are spilling out.`
-            });
-          }
-
-          // 2c. Text is visually clipped (hidden overflow + content taller than box)
-          if ((style.overflow === 'hidden' || style.overflow === 'clip') &&
-              el.scrollHeight > el.clientHeight + 8 && el.clientHeight > 0) {
-            issues.push({
-              issueType: 'clipped',
-              label: `"${tokenName}" text is clipped`,
-              detail: `Content height is ${el.scrollHeight}px but box is only ${el.clientHeight}px. Text is being cut off.`
-            });
-          }
-
-          // 2d. Element overlaps its sibling (crude overlap detection)
-          const nextSibling = el.nextElementSibling;
-          if (nextSibling) {
-            const sibRect = nextSibling.getBoundingClientRect();
-            if (rect.bottom > sibRect.top + 10 && rect.right > sibRect.left + 10 &&
-                rect.left < sibRect.right && rect.top < sibRect.bottom) {
-              issues.push({
-                issueType: 'overlap',
-                label: `"${tokenName}" overlaps next element`,
-                detail: `At ${bpWidth}px, this element visually overlaps its sibling — likely a missing responsive rule.`
-              });
-            }
-          }
-        }
-
-        // Deduplicate by label
-        const seen = new Set();
-        return issues.filter(i => {
-          if (seen.has(i.label)) return false;
-          seen.add(i.label);
-          return true;
-        });
-      }, { tokens: leafTokens, bpWidth: bp.width });
-
-      if (bpIssues.length > 0) {
-        responsiveIssuesByBreakpoint.push({ label: bp.label, width: bp.width, issues: bpIssues });
-        console.log(`  📱 ${bp.label}: ${bpIssues.length} issue(s)`);
-      } else {
-        console.log(`  ✅ ${bp.label}: No issues`);
-      }
-    }
-
-    // Restore original viewport before screenshots
-    await page.setViewportSize({ width: frameWidth, height: frameHeight });
-    await page.waitForTimeout(300);
-    console.log(`📱 Responsive check done: ${responsiveIssuesByBreakpoint.reduce((s, b) => s + b.issues.length, 0)} total responsive issues.`);
-
     // === DYNAMIC MULTI-SCREENSHOT LOGIC ===
     // Remove the image blackout so PDF screenshots show real website images
     await page.evaluate(() => {
@@ -1183,7 +1092,7 @@ async function runAudit() {
     });
     await page.waitForTimeout(200);
     
-    const maxScreenshots = Math.min(3, Math.ceil(allIssues.length / 8));
+    const maxScreenshots = Math.min(2, Math.ceil(allIssues.length / 8));
     const issuesPerScreen = Math.ceil(allIssues.length / Math.max(1, maxScreenshots));
     console.log(`📸 Generating ${maxScreenshots} screenshot(s)...`);
     
