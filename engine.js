@@ -420,7 +420,12 @@ async function runAudit() {
             const _firstLive = _norm(_liveFF.split(',')[0].replace(/["']/g, '').trim());
             const _isSysFont = /^(sf|san francisco|segoe)/.test(_figmaN);
             const _sysMatch = _isSysFont && /(-apple-system|system-ui|blinkmacsystemfont|segoe)/.test(_liveFF);
-            if (!_liveFF.includes(_figmaN) && !_firstLive.includes(_figmaN) && !_figmaN.includes(_firstLive) && !_sysMatch) {
+            // Check if the Figma font is actually loaded on the page (catches framework-renamed fonts)
+            const _fontLoaded = [...document.fonts].some(f => {
+              const fn = f.family.toLowerCase().replace(/["']/g, '');
+              return fn.includes(_figmaN) || _figmaN.includes(fn);
+            });
+            if (!_liveFF.includes(_figmaN) && !_firstLive.includes(_figmaN) && !_figmaN.includes(_firstLive) && !_sysMatch && !_fontLoaded) {
               errors.push('Font Family');
             }
           }
