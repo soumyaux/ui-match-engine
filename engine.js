@@ -413,7 +413,14 @@ async function runAudit() {
             if (Math.abs(diff) > 2) errors.push('Font Size');
           }
           if (design.ff && design.ff !== 'Mixed' && live.fontFamily) {
-            if (!live.fontFamily.toLowerCase().includes(design.ff.toLowerCase())) {
+            const _figmaFF = design.ff.toLowerCase();
+            const _liveFF = live.fontFamily.toLowerCase();
+            const _norm = (s) => s.replace(/\b(variable|display|text|pro|neue)\b/g, '').replace(/\s+/g, ' ').trim();
+            const _figmaN = _norm(_figmaFF);
+            const _firstLive = _norm(_liveFF.split(',')[0].replace(/["']/g, '').trim());
+            const _isSysFont = /^(sf|san francisco|segoe)/.test(_figmaN);
+            const _sysMatch = _isSysFont && /(-apple-system|system-ui|blinkmacsystemfont|segoe)/.test(_liveFF);
+            if (!_liveFF.includes(_figmaN) && !_firstLive.includes(_figmaN) && !_figmaN.includes(_firstLive) && !_sysMatch) {
               errors.push('Font Family');
             }
           }
