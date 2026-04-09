@@ -1313,11 +1313,11 @@ async function runAudit() {
       <span style="font-weight:600;letter-spacing:0.3px;opacity:0.7;">Legend</span>
       <span style="display:flex;align-items:center;gap:6px;">
         <span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:#f8fafc;border:1px solid #e2e8f0;flex-shrink:0;"></span>
-        Grey pill - Value & Token mismatch
+        Grey Pill - Value & Token Mismatch
       </span>
       <span style="display:flex;align-items:center;gap:6px;">
         <span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:#fffbeb;border:1px solid #fde68a;flex-shrink:0;"></span>
-        Yellow pill - Value match, But token not connected
+        Yellow Pill - Value Match, But Token Not Connected
       </span>
     </div>
   </div>
