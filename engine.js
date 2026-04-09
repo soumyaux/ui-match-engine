@@ -415,17 +415,18 @@ async function runAudit() {
           if (design.ff && design.ff !== 'Mixed' && live.fontFamily) {
             const _figmaFF = design.ff.toLowerCase();
             const _liveFF = live.fontFamily.toLowerCase();
-            const _norm = (s) => s.replace(/\b(variable|display|text|pro|neue)\b/g, '').replace(/\s+/g, ' ').trim();
-            const _figmaN = _norm(_figmaFF);
-            const _firstLive = _norm(_liveFF.split(',')[0].replace(/["']/g, '').trim());
-            const _isSysFont = /^(sf|san francisco|segoe)/.test(_figmaN);
-            const _sysMatch = _isSysFont && /(-apple-system|system-ui|blinkmacsystemfont|segoe)/.test(_liveFF);
-            // Check if the Figma font is actually loaded on the page (catches framework-renamed fonts)
-            const _fontLoaded = [...document.fonts].some(f => {
-              const fn = f.family.toLowerCase().replace(/["']/g, '');
-              return fn.includes(_figmaN) || _figmaN.includes(fn);
-            });
-            if (!_liveFF.includes(_figmaN) && !_firstLive.includes(_figmaN) && !_figmaN.includes(_firstLive) && !_sysMatch && !_fontLoaded) {
+            const _strip = (s) => s.replace(/\b(variable|display|text|pro|neue)\b/g, '').replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
+            const _figmaN = _strip(_figmaFF);
+            const _firstLive = _strip(_liveFF.split(',')[0].replace(/["']/g, '').trim());
+            // 1. Direct substring check
+            if (_liveFF.includes(_figmaN) || _firstLive.includes(_figmaN) || _figmaN.includes(_firstLive)) { /* match */ }
+            // 2. System font aliases
+            else if (/^(sf|san francisco|segoe)/.test(_figmaN) && /(-apple-system|system-ui|blinkmacsystemfont|segoe)/.test(_liveFF)) { /* match */ }
+            // 3. First-word match (e.g. "Geist Sans" vs "Geist" → both start with "geist")
+            else if (_figmaN.split(' ')[0].length >= 3 && _firstLive.includes(_figmaN.split(' ')[0])) { /* match */ }
+            // 4. Font actually loaded on page (framework-renamed like __Inter_abc123)
+            else if ([...document.fonts].some(f => { const fn = _strip(f.family.toLowerCase().replace(/["']/g, '')); return fn.includes(_figmaN) || _figmaN.includes(fn) || (fn.length >= 3 && _figmaN.includes(fn.split(' ')[0])); })) { /* match */ }
+            else {
               errors.push('Font Family');
             }
           }
