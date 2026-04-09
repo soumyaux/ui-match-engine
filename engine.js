@@ -1310,14 +1310,14 @@ async function runAudit() {
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:16px;margin-top:14px;padding:8px 14px;background:rgba(255,255,255,0.12);border-radius:8px;font-size:11px;color:rgba(255,255,255,0.9);">
-      <span style="font-weight:600;letter-spacing:0.3px;opacity:0.7;text-transform:uppercase;">Legend</span>
+      <span style="font-weight:600;letter-spacing:0.3px;opacity:0.7;">Legend</span>
       <span style="display:flex;align-items:center;gap:6px;">
         <span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:#f8fafc;border:1px solid #e2e8f0;flex-shrink:0;"></span>
-        Grey pill — value mismatch
+        Grey pill - Value & Token mismatch
       </span>
       <span style="display:flex;align-items:center;gap:6px;">
         <span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:#fffbeb;border:1px solid #fde68a;flex-shrink:0;"></span>
-        Yellow pill — values match, token not connected
+        Yellow pill - Value match, But token not connected
       </span>
     </div>
   </div>
