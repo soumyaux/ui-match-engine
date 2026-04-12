@@ -73,17 +73,38 @@ async function runAudit() {
     await page.setViewportSize({ width: frameWidth, height: frameHeight });
     console.log(`📐 Viewport set to ${frameWidth}×${frameHeight} @1x (matching Figma frame)`);
 
+    let response;
     try {
       console.log(`🌍 Navigating to ${targetUrl}...`);
-      const response = await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
+
+      // TIER 1: domcontentloaded @ 60s
+      // Works for most sites. Fires as soon as HTML is parsed.
+      // 'networkidle' is intentionally avoided — Shopify/e-commerce sites fire
+      // persistent analytics/tracking requests (Meta Pixel, GA4, Klaviyo) that
+      // prevent networkidle from ever settling within a reasonable timeout.
+      try {
+        response = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        console.log('✅ Page reached (domcontentloaded).');
+      } catch (tier1Error) {
+        // TIER 2: commit fallback @ 30s
+        // 'commit' fires the moment first byte is received from the server.
+        // Used for very slow servers / heavy SPAs that take >60s to parse HTML.
+        console.warn(`⚠️ domcontentloaded timed out. Retrying with commit strategy...`);
+        response = await page.goto(targetUrl, { waitUntil: 'commit', timeout: 30000 });
+        console.log('✅ Page reached (commit fallback).');
+      }
+
       if (!response || !response.ok()) {
         const status = response ? response.status() : 'Unknown';
         console.error(`❌ HTTP Error ${status}: Target website returned an error or is unreachable.`);
         fs.writeFileSync('playwright-report/error-log.txt', `HTTP Error ${status}: Target website returned an error or is unreachable.`);
         process.exit(1);
       }
-      // Extra wait to ensure all CSS/JS has fully loaded
-      await page.waitForLoadState('load');
+
+      // Wait for full page load (images, stylesheets) — with a 30s safety cap
+      await page.waitForLoadState('load', { timeout: 30000 }).catch(() => {
+        console.warn('⚠️ load state timed out — proceeding with partial load.');
+      });
     } catch (navError) {
       console.error(`❌ Failed to reach ${targetUrl}. Details: ${navError.message}`);
       fs.writeFileSync('playwright-report/error-log.txt', `Navigation failed: ${navError.message}`);
@@ -108,7 +129,7 @@ async function runAudit() {
       }));
       await document.fonts.ready;
     });
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(800); // Extra buffer for Shopify's deferred CSS/font injection
     console.log('🔤 Stylesheets & fonts loaded.');
 
     // 2. Freeze ALL animations, transitions, and hide dynamic overlays
