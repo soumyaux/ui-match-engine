@@ -229,7 +229,7 @@ async function runAudit() {
       if (authCheck.hasPasswordField || (authCheck.urlIsLogin && authCheck.titleIsAuth)) {
         console.error('❌ Login/authentication page detected.');
         fs.writeFileSync('playwright-report/error-log.txt',
-          'This URL requires login. UI Match cannot audit pages behind authentication. Please use a publicly accessible URL.');
+          'UI Match can\'t access pages that require a login. Please provide a publicly accessible URL.');
         process.exit(1);
       }
 
