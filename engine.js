@@ -874,14 +874,27 @@ async function runAudit() {
           }
         }
 
-        contentMatchPercent = contentBlocks > 0
-          ? Math.round((contentBlockScore / contentBlocks) * 100)
+        // Step 3: Blend raw pixel score with block score based on whitespace detection.
+        // Raw pixel score is accurate when the page has enough content.
+        // Only adjust down when whitespace is clearly inflating the raw score.
+        const blockScoreRaw = contentBlocks > 0
+          ? (contentBlockScore / contentBlocks) * 100
           : pixelMatchPercent;
+        const contentCoverage = contentBlocks / (bCols * bRows);
+        const scoreGap = pixelMatchPercent - blockScoreRaw;
 
-        console.log(`🎯 Content-aware: ${contentBlocks}/${bCols * bRows} content blocks, ${contentMatchPercent}% match (raw pixel: ${pixelMatchPercent}%)`);
+        if (contentCoverage < 0.35 && scoreGap > 20) {
+          // Sparse page + big gap = whitespace is inflating the raw score. Blend.
+          contentMatchPercent = Math.round(pixelMatchPercent * 0.6 + blockScoreRaw * 0.4);
+        } else {
+          // Content-dense page or scores agree — raw score is reliable.
+          contentMatchPercent = pixelMatchPercent;
+        }
 
-        // === NEW: FAIL FAST IF TOTAL MISMATCH ===
-        if (pixelMatchPercent < 40 || contentMatchPercent < 35) {
+        console.log(`🎯 Visual: ${contentMatchPercent}% (raw: ${pixelMatchPercent}%, block: ${Math.round(blockScoreRaw)}%, coverage: ${Math.round(contentCoverage * 100)}%)`);
+
+        // === FAIL FAST IF TOTAL MISMATCH ===
+        if (pixelMatchPercent < 40 || blockScoreRaw < 35) {
           console.error(`🚨 TOTAL MISMATCH DETECTED (content: ${contentMatchPercent}%, raw: ${pixelMatchPercent}%). Aborting audit.`);
           const msg = "🚨 Whoops! This looks like a completely different page.";
           fs.writeFileSync('playwright-report/error-log.txt', msg);
