@@ -183,9 +183,9 @@ async function runAudit() {
     console.log('✅ Environment normalized — fonts loaded, animations frozen, dynamic content hidden.');
 
     // ── AUTH WALL DETECTION ──
-    // Only runs when HTTP status was a soft-fail (401/403) to avoid false positives
-    // on sites with legitimate login forms in their main content.
-    if (httpStatus === 401 || httpStatus === 403) {
+    // Runs on EVERY page — many protected sites return HTTP 200 with a login form,
+    // or redirect to a login URL with a 302→200 chain.
+    {
       const authCheck = await page.evaluate(() => {
         const url = window.location.href.toLowerCase();
         const title = (document.title || '').toLowerCase();
@@ -233,15 +233,16 @@ async function runAudit() {
         process.exit(1);
       }
 
-      if (authCheck.isNearlyEmpty) {
-        console.error('❌ Page returned 403 with minimal content.');
-        fs.writeFileSync('playwright-report/error-log.txt',
-          'Access denied (HTTP 403). The website blocked the request. Please try a publicly accessible URL.');
-        process.exit(1);
+      if (httpStatus === 401 || httpStatus === 403) {
+        if (authCheck.isNearlyEmpty) {
+          console.error('❌ Page returned 403 with minimal content.');
+          fs.writeFileSync('playwright-report/error-log.txt',
+            'Access denied (HTTP 403). The website blocked the request. Please try a publicly accessible URL.');
+          process.exit(1);
+        }
+        // Page has real content despite 403 — proceed
+        console.log(`✅ Auth check passed: page has content despite HTTP ${httpStatus}. Continuing audit.`);
       }
-
-      // Page has real content despite 403 — proceed with the audit
-      console.log(`✅ Auth check passed: page has content despite HTTP ${httpStatus}. Continuing audit.`);
     }
 
     // ══════════════════════════════════════════
