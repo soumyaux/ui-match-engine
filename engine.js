@@ -847,7 +847,7 @@ async function runAudit() {
 
         for (let by = 0; by < bRows; by++) {
           for (let bx = 0; bx < bCols; bx++) {
-            let blockPx = 0, bgCount = 0, missPx = 0;
+            let blockPx = 0, bgCount = 0, missPx = 0, liveBlackPx = 0, figmaBlackPx = 0;
             const yEnd = Math.min((by + 1) * BLOCK, height);
             const xEnd = Math.min((bx + 1) * BLOCK, width);
 
@@ -857,15 +857,20 @@ async function runAudit() {
                 blockPx++;
                 if (isBg(cropFigma, i, bgF) && isBg(cropLive, i, bgL)) bgCount++;
                 if (rawDiff.data[i] === 255 && rawDiff.data[i+1] === 0 && rawDiff.data[i+2] === 0) missPx++;
+                if (cropLive[i] < 20 && cropLive[i+1] < 20 && cropLive[i+2] < 20) liveBlackPx++;
+                if (cropFigma[i] < 20 && cropFigma[i+1] < 20 && cropFigma[i+2] < 20) figmaBlackPx++;
               }
             }
+
+            // Skip blacked-out image areas (live is black from CSS blackout, Figma has actual image)
+            if (liveBlackPx / blockPx > 0.7 && figmaBlackPx / blockPx < 0.3) continue;
 
             // Skip blocks that are >85% background in BOTH images (whitespace)
             if (bgCount / blockPx > 0.85) continue;
 
-            // Score this content block — forgive <5% mismatches (anti-aliasing / sub-pixel rendering noise)
+            // Score this content block — forgive <8% mismatches (font rendering / anti-aliasing noise)
             contentBlocks++;
-            contentBlockScore += missPx / blockPx < 0.05 ? 1 : (blockPx - missPx) / blockPx;
+            contentBlockScore += missPx / blockPx < 0.08 ? 1 : (blockPx - missPx) / blockPx;
           }
         }
 
@@ -876,15 +881,15 @@ async function runAudit() {
         console.log(`🎯 Content-aware: ${contentBlocks}/${bCols * bRows} content blocks, ${contentMatchPercent}% match (raw pixel: ${pixelMatchPercent}%)`);
 
         // === NEW: FAIL FAST IF TOTAL MISMATCH ===
-        if (pixelMatchPercent < 40) {
-          console.error(`🚨 TOTAL MISMATCH DETECTED (${pixelMatchPercent}%). Aborting audit.`);
+        if (pixelMatchPercent < 40 || contentMatchPercent < 35) {
+          console.error(`🚨 TOTAL MISMATCH DETECTED (content: ${contentMatchPercent}%, raw: ${pixelMatchPercent}%). Aborting audit.`);
           const msg = "🚨 Whoops! This looks like a completely different page.";
           fs.writeFileSync('playwright-report/error-log.txt', msg);
-          
+
           // Generate a "Failure PDF" so the user isn't stuck
           const failHtml = `<html><body style="font-family:sans-serif; text-align:center; padding:50px;">
             <h1 style="color:#ef4444; font-size:32px;">${msg}</h1>
-            <p style="color:#64748b;">The live website does not visually resemble your Figma design. Match score: ${pixelMatchPercent}%</p>
+            <p style="color:#64748b;">The live website does not visually resemble your Figma design. Match score: ${contentMatchPercent}%</p>
           </body></html>`;
           const failPage = await browser.newPage();
           await failPage.setContent(failHtml);
