@@ -94,16 +94,30 @@ async function runAudit() {
         console.log('✅ Page reached (commit fallback).');
       }
 
-      if (!response || !response.ok()) {
-        const status = response ? response.status() : 'Unknown';
-        console.error(`❌ HTTP Error ${status}: Target website returned an error or is unreachable.`);
-        fs.writeFileSync('playwright-report/error-log.txt', `HTTP Error ${status}: Target website returned an error or is unreachable.`);
+      const httpStatus = response ? response.status() : 0;
+
+      // Hard fail: no response, page not found, or server errors
+      const ENGINE_HARD_FAIL = new Set([0, 404, 410, 500, 502, 503, 504]);
+      if (!response || ENGINE_HARD_FAIL.has(httpStatus)) {
+        console.error(`❌ HTTP Error ${httpStatus}: Target website returned an error or is unreachable.`);
+        fs.writeFileSync('playwright-report/error-log.txt', `HTTP Error ${httpStatus}: Target website returned an error or is unreachable.`);
         process.exit(1);
+      }
+
+      // Soft-fail codes (401, 403, 429): Playwright may have rendered the page via JS.
+      // Continue — the auth wall detector after page normalization will decide.
+      if (httpStatus >= 400) {
+        console.warn(`⚠️ HTTP ${httpStatus} received, but continuing — page may have rendered content.`);
       }
 
       // Wait for full page load (images, stylesheets) — with a 30s safety cap
       await page.waitForLoadState('load', { timeout: 30000 }).catch(() => {
         console.warn('⚠️ load state timed out — proceeding with partial load.');
+      });
+
+      // Wait for any client-side redirects to settle before touching the execution context
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {
+        console.warn('⚠️ networkidle timed out — proceeding.');
       });
     } catch (navError) {
       console.error(`❌ Failed to reach ${targetUrl}. Details: ${navError.message}`);
@@ -166,6 +180,68 @@ async function runAudit() {
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(300);
     console.log('✅ Environment normalized — fonts loaded, animations frozen, dynamic content hidden.');
+
+    // ── AUTH WALL DETECTION ──
+    // Only runs when HTTP status was a soft-fail (401/403) to avoid false positives
+    // on sites with legitimate login forms in their main content.
+    if (httpStatus === 401 || httpStatus === 403) {
+      const authCheck = await page.evaluate(() => {
+        const url = window.location.href.toLowerCase();
+        const title = (document.title || '').toLowerCase();
+        const bodyText = (document.body?.innerText || '').substring(0, 3000).toLowerCase();
+
+        // 1. URL redirected to a login page
+        const loginUrlPatterns = ['/login', '/signin', '/sign-in', '/auth', '/sso',
+                                  '/accounts/login', '/user/login', '/session/new'];
+        const urlIsLogin = loginUrlPatterns.some(p => url.includes(p));
+
+        // 2. Password field — strongest signal for a login form
+        const hasPasswordField = !!document.querySelector(
+          'input[type="password"], input[name*="password"], input[name*="passwd"]'
+        );
+
+        // 3. Title/heading signals
+        const authTitlePatterns = ['sign in', 'log in', 'login', 'authentication',
+                                   'access denied', 'unauthorized', '403 forbidden'];
+        const titleIsAuth = authTitlePatterns.some(p => title.includes(p));
+
+        // 4. Cloudflare / bot challenge detection
+        const isCfChallenge = !!document.querySelector('#challenge-running, #cf-challenge-running, .cf-browser-verification')
+                              || bodyText.includes('checking your browser')
+                              || bodyText.includes('verify you are human')
+                              || bodyText.includes('just a moment');
+
+        // 5. Minimal content — page is effectively empty/blocked
+        const visibleTextLength = bodyText.replace(/\s+/g, '').length;
+        const isNearlyEmpty = visibleTextLength < 100;
+
+        return { urlIsLogin, hasPasswordField, titleIsAuth, isCfChallenge, isNearlyEmpty };
+      });
+
+      if (authCheck.isCfChallenge) {
+        console.error('❌ Cloudflare bot challenge detected — site blocks automated browsers.');
+        fs.writeFileSync('playwright-report/error-log.txt',
+          'This website uses bot protection (e.g. Cloudflare) that blocks automated browsers. Please use a publicly accessible URL.');
+        process.exit(1);
+      }
+
+      if (authCheck.hasPasswordField || (authCheck.urlIsLogin && authCheck.titleIsAuth)) {
+        console.error('❌ Login/authentication page detected.');
+        fs.writeFileSync('playwright-report/error-log.txt',
+          'This URL requires login. UI Match cannot audit pages behind authentication. Please use a publicly accessible URL.');
+        process.exit(1);
+      }
+
+      if (authCheck.isNearlyEmpty) {
+        console.error('❌ Page returned 403 with minimal content.');
+        fs.writeFileSync('playwright-report/error-log.txt',
+          'Access denied (HTTP 403). The website blocked the request. Please try a publicly accessible URL.');
+        process.exit(1);
+      }
+
+      // Page has real content despite 403 — proceed with the audit
+      console.log(`✅ Auth check passed: page has content despite HTTP ${httpStatus}. Continuing audit.`);
+    }
 
     // ══════════════════════════════════════════
     // PHASE 1: TOKEN CSS VALIDATION
