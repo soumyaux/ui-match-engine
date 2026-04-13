@@ -760,7 +760,7 @@ async function runAudit() {
         color: transparent !important;
       }
     `});
-    await page.waitForTimeout(100);
+    await page.waitForTimeout(50);
 
     const liveScreenshotBuffer = await page.screenshot({ fullPage: true });
     fs.writeFileSync('playwright-report/live-screenshot.png', liveScreenshotBuffer);
@@ -1292,7 +1292,7 @@ async function runAudit() {
         if (s.textContent.includes('brightness(0)')) s.remove();
       });
     });
-    await page.waitForTimeout(100);
+    await page.waitForTimeout(50);
 
     const maxScreenshots = Math.min(2, Math.ceil(allIssues.length / 8));
     const issuesPerScreen = Math.ceil(allIssues.length / Math.max(1, maxScreenshots));
