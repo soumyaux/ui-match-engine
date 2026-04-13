@@ -805,49 +805,75 @@ async function runAudit() {
         pixelMatchPercent = Math.round(((totalPixels - mismatchedPixels) / totalPixels) * 100);
         console.log(`🔍 Pixelmatch: ${mismatchedPixels} differing pixels out of ${totalPixels} (${pixelMatchPercent}% match).`);
 
-        // --- CONTENT-AWARE VISUAL SCORE ---
-        // Humans focus on content, not whitespace. Exclude background pixels from scoring.
-        function detectBgColor(imgData, w, h) {
+        // --- CONTENT-AWARE BLOCK-BASED VISUAL SCORE ---
+        // Problem: pixel-based scoring inflates scores on pages with lots of whitespace
+        // because white=white pixels are "free matches." Humans don't judge this way —
+        // they focus on content regions and weight each region equally.
+        //
+        // Solution: divide the image into small blocks, detect background using a
+        // full-image histogram, skip blocks that are mostly background in both images,
+        // and score each remaining content block equally (not weighted by pixel count).
+
+        // Step 1: Detect background color using full-image histogram (sample every 2nd pixel)
+        function detectBgHist(imgData, w, h) {
           const counts = {};
-          const S = 10;
-          const corners = [[0,0],[w-S,0],[0,h-S],[w-S,h-S]];
-          for (const [sx, sy] of corners) {
-            for (let y = sy; y < sy + S && y < h; y++) {
-              for (let x = sx; x < sx + S && x < w; x++) {
-                const i = (w * y + x) << 2;
-                const key = `${Math.round(imgData[i]/8)*8},${Math.round(imgData[i+1]/8)*8},${Math.round(imgData[i+2]/8)*8}`;
-                counts[key] = (counts[key] || 0) + 1;
-              }
+          for (let y = 0; y < h; y += 2) {
+            for (let x = 0; x < w; x += 2) {
+              const i = (w * y + x) << 2;
+              const r = Math.round(imgData[i] / 16) * 16;
+              const g = Math.round(imgData[i+1] / 16) * 16;
+              const b = Math.round(imgData[i+2] / 16) * 16;
+              const key = `${r},${g},${b}`;
+              counts[key] = (counts[key] || 0) + 1;
             }
           }
-          let max = 0, bg = '255,255,255';
-          for (const [k, c] of Object.entries(counts)) { if (c > max) { max = c; bg = k; } }
-          const [r, g, b] = bg.split(',').map(Number);
+          let max = 0, bgKey = '255,255,255';
+          for (const [k, c] of Object.entries(counts)) { if (c > max) { max = c; bgKey = k; } }
+          const [r, g, b] = bgKey.split(',').map(Number);
           return { r, g, b };
         }
 
-        const bgF = detectBgColor(cropFigma, width, height);
-        const bgL = detectBgColor(cropLive, width, height);
-        const BG_TOL = 30;
+        const bgF = detectBgHist(cropFigma, width, height);
+        const bgL = detectBgHist(cropLive, width, height);
+        const BG_TOL = 40;
         const isBg = (data, i, bg) =>
           Math.abs(data[i]-bg.r) <= BG_TOL && Math.abs(data[i+1]-bg.g) <= BG_TOL && Math.abs(data[i+2]-bg.b) <= BG_TOL;
 
-        let contentPx = 0, contentMiss = 0;
-        for (let y = 0; y < height; y++) {
-          for (let x = 0; x < width; x++) {
-            const i = (width * y + x) << 2;
-            if (!isBg(cropFigma, i, bgF) || !isBg(cropLive, i, bgL)) {
-              contentPx++;
-              if (rawDiff.data[i] === 255 && rawDiff.data[i+1] === 0 && rawDiff.data[i+2] === 0) contentMiss++;
+        // Step 2: Block-based scoring — each 20x20 block gets equal weight
+        const BLOCK = 20;
+        const bCols = Math.ceil(width / BLOCK);
+        const bRows = Math.ceil(height / BLOCK);
+        let contentBlocks = 0, contentBlockScore = 0;
+
+        for (let by = 0; by < bRows; by++) {
+          for (let bx = 0; bx < bCols; bx++) {
+            let blockPx = 0, bgCount = 0, missPx = 0;
+            const yEnd = Math.min((by + 1) * BLOCK, height);
+            const xEnd = Math.min((bx + 1) * BLOCK, width);
+
+            for (let y = by * BLOCK; y < yEnd; y++) {
+              for (let x = bx * BLOCK; x < xEnd; x++) {
+                const i = (width * y + x) << 2;
+                blockPx++;
+                if (isBg(cropFigma, i, bgF) && isBg(cropLive, i, bgL)) bgCount++;
+                if (rawDiff.data[i] === 255 && rawDiff.data[i+1] === 0 && rawDiff.data[i+2] === 0) missPx++;
+              }
             }
+
+            // Skip blocks that are >85% background in BOTH images (whitespace)
+            if (bgCount / blockPx > 0.85) continue;
+
+            // Score this content block proportionally
+            contentBlocks++;
+            contentBlockScore += (blockPx - missPx) / blockPx;
           }
         }
 
-        contentMatchPercent = contentPx > 0
-          ? Math.round(((contentPx - contentMiss) / contentPx) * 100)
+        contentMatchPercent = contentBlocks > 0
+          ? Math.round((contentBlockScore / contentBlocks) * 100)
           : pixelMatchPercent;
 
-        console.log(`🎯 Content-aware: ${contentPx} content pixels (${Math.round(contentPx/totalPixels*100)}% coverage), ${contentMatchPercent}% match`);
+        console.log(`🎯 Content-aware: ${contentBlocks}/${bCols * bRows} content blocks, ${contentMatchPercent}% match (raw pixel: ${pixelMatchPercent}%)`);
 
         // === NEW: FAIL FAST IF TOTAL MISMATCH ===
         if (pixelMatchPercent < 40) {
