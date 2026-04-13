@@ -863,9 +863,9 @@ async function runAudit() {
             // Skip blocks that are >85% background in BOTH images (whitespace)
             if (bgCount / blockPx > 0.85) continue;
 
-            // Score this content block proportionally
+            // Score this content block — forgive <5% mismatches (anti-aliasing / sub-pixel rendering noise)
             contentBlocks++;
-            contentBlockScore += (blockPx - missPx) / blockPx;
+            contentBlockScore += missPx / blockPx < 0.05 ? 1 : (blockPx - missPx) / blockPx;
           }
         }
 
