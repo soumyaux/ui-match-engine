@@ -74,6 +74,7 @@ async function runAudit() {
     console.log(`📐 Viewport set to ${frameWidth}×${frameHeight} @1x (matching Figma frame)`);
 
     let response;
+    let httpStatus = 0;
     try {
       console.log(`🌍 Navigating to ${targetUrl}...`);
 
@@ -94,7 +95,7 @@ async function runAudit() {
         console.log('✅ Page reached (commit fallback).');
       }
 
-      const httpStatus = response ? response.status() : 0;
+      httpStatus = response ? response.status() : 0;
 
       // Hard fail: no response, page not found, or server errors
       const ENGINE_HARD_FAIL = new Set([0, 404, 410, 500, 502, 503, 504]);
