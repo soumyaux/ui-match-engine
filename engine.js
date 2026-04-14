@@ -897,18 +897,8 @@ async function runAudit() {
         // === FAIL FAST IF TOTAL MISMATCH ===
         if (pixelMatchPercent < 40 || blockScoreRaw < 35) {
           console.error(`🚨 TOTAL MISMATCH DETECTED (content: ${contentMatchPercent}%, raw: ${pixelMatchPercent}%). Aborting audit.`);
-          const msg = "🚨 Whoops! This looks like a completely different page.";
+          const msg = `Visual match is only ${contentMatchPercent}% (below 40% threshold). The live website does not resemble your Figma design, so the audit was not run. Please check the URL and try again.`;
           fs.writeFileSync('playwright-report/error-log.txt', msg);
-
-          // Generate a "Failure PDF" so the user isn't stuck
-          const failHtml = `<html><body style="font-family:sans-serif; text-align:center; padding:50px;">
-            <h1 style="color:#ef4444; font-size:32px;">${msg}</h1>
-            <p style="color:#64748b;">The live website does not visually resemble your Figma design. Match score: ${contentMatchPercent}%</p>
-          </body></html>`;
-          const failPage = await browser.newPage();
-          await failPage.setContent(failHtml);
-          await failPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', format: 'A4' });
-          
           process.exit(1);
         }
 
@@ -1256,12 +1246,28 @@ async function runAudit() {
     // Use the REAL pixel-level match score for visual, and calculate token score for structure
     // Each checked token (represented by a result in tokenReport) checks around 5-8 properties.
     const validTokensCount = tokenReport.filter(r => r.type !== 'MAJOR_VISUAL' && r.element !== 'Missing Element').length;
-    
+
+    // --- WRONG PAGE FAIL-FAST (missing element ratio) ---
+    // If >60% of Figma tokens find no matching element on the live page, it's the wrong page.
+    // Bug: when all elements are missing, totalErrorsFound=0 → trueMatchScore=100% (formula blind spot).
+    const totalTokensChecked = tokenReport.length;
+    const missingCount = tokenReport.filter(r => r.element === 'Missing Element').length;
+    if (totalTokensChecked > 5 && missingCount / totalTokensChecked > 0.6) {
+      console.log(`❌ WRONG PAGE: ${missingCount}/${totalTokensChecked} Figma tokens not found on page.`);
+      fs.writeFileSync('playwright-report/error-log.txt',
+        'Wrong Page: Most elements from your Figma frame were not found on this page. Please check that the URL matches your selected frame.');
+      process.exit(1);
+    }
+
     const visualMatchScore = contentMatchPercent;
     let totalErrorsFound = 0;
     allIssues.forEach(i => {
         if (i.type !== 'MAJOR_VISUAL' && i.type !== 'TOKEN_UNCONNECTED' && i.details) totalErrorsFound += i.details.length;
     });
+
+    // Count missing elements as errors so trueMatchScore reflects them
+    const missingElementCount = tokenReport.filter(r => r.element === 'Missing Element').length;
+    totalErrorsFound += missingElementCount * 8;
 
     // Dynamically scale total rules evaluated to accurately reflect the volume of tokens vs volume of errors.
     const totalRulesChecked = Math.max(validTokensCount * 12, totalErrorsFound + Math.max(10, validTokensCount * 2));
