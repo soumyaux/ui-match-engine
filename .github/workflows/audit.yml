@@ -101,44 +101,23 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
-      - name: 📸 Upload Visual Audit Report to Supabase
+      - name: 📸 Upload PDF Report to Supabase
         if: always()
         env:
           SESSION_ID: ${{ github.event.inputs.session_id }}
-          SCAN_ID: ${{ github.event.inputs.scan_id }}
         run: |
           FINAL_ID="${SESSION_ID:-manual_run}"
-          FILENAME="${FINAL_ID}.zip"
 
-          cd playwright-report
-          zip -r ../$FILENAME ./*
-          cd ..
-
-          curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/$FILENAME" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-            -H "Content-Type: application/zip" \
-            -H "x-upsert: true" \
-            --data-binary @"./$FILENAME"
-
-          # Also upload the PDF and PNG directly (so plugin can fetch without unzipping)
           if [ -f "playwright-report/visual-audit-diff.pdf" ]; then
             curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/${FINAL_ID}.pdf" \
               -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
               -H "Content-Type: application/pdf" \
               -H "x-upsert: true" \
               --data-binary @"playwright-report/visual-audit-diff.pdf"
-            echo "PDF uploaded directly"
+            echo "PDF uploaded successfully"
+          else
+            echo "No PDF found — audit may have failed"
           fi
-          if [ -f "playwright-report/visual-audit-diff.png" ]; then
-            curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/${FINAL_ID}.png" \
-              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-              -H "Content-Type: image/png" \
-              -H "x-upsert: true" \
-              --data-binary @"playwright-report/visual-audit-diff.png"
-            echo "PNG uploaded directly"
-          fi
-
-          echo "Report uploaded successfully"
 
       - name: ✅ Update Scan Status to Completed
         if: ${{ success() && github.event.inputs.scan_id != '' }}
