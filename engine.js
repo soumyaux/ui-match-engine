@@ -32,7 +32,8 @@ async function runAudit() {
   let browser;
   try {
     const targetUrl = process.env.TARGET_URL;
-    const WORKER_URL = 'https://ui-match-proxy.soumyasahoo473.workers.dev';
+    // Worker URL kept for reference — currently unused after AI vision removal
+    // const WORKER_URL = 'https://ui-match-proxy.soumyasahoo473.workers.dev';
     let figmaTokens = [];
 
     // Read tokens from local file (downloaded from Supabase Storage)
@@ -1052,11 +1053,13 @@ async function runAudit() {
         // Filter out tiny boxes (noise)
         const rawClusters = clusters.filter(c => c !== null && c.w > 15 && c.h > 15);
 
-        // === FILTER: Remove clusters that overlap image/media areas ===
-        // Check multiple probe points + child elements to catch image containers
-        const nonImageClusters = await page.evaluate((boxes) => {
+        // === FILTER + REFINE clusters in a single page.evaluate (saves one IPC roundtrip) ===
+        const finalClusters = await page.evaluate((boxes) => {
           return boxes.filter(box => {
-            // Probe 5 points across the box (center + 4 corners)
+            // Cap: skip boxes larger than 50% viewport width or 400px tall
+            if (box.w > window.innerWidth * 0.5 || box.h > 400) return false;
+
+            // Probe 5 points to check for image/media overlap
             const probes = [
               [box.x + box.w / 2, box.y + box.h / 2],
               [box.x + box.w * 0.2, box.y + box.h * 0.2],
@@ -1075,10 +1078,9 @@ async function runAudit() {
               if (style.backgroundImage && style.backgroundImage !== 'none' && style.backgroundImage.includes('url(')) imageHits++;
               if (el.closest?.('figure') || el.closest?.('[class*="image"]') || el.closest?.('[class*="Image"]')) imageHits++;
             }
-            // If 2+ probe points hit image/media areas, skip this box
             if (imageHits >= 2) return false;
-            
-            // Also check if the box area CONTAINS image elements
+
+            // Check if box area contains image elements
             const cx = box.x + box.w / 2;
             const cy = box.y + box.h / 2;
             const el = document.elementFromPoint(cx, cy);
@@ -1087,7 +1089,6 @@ async function runAudit() {
               if (parent) {
                 const imgs = parent.querySelectorAll('img, video, canvas, picture');
                 const parentRect = parent.getBoundingClientRect();
-                // If container has images and the box covers most of it, it's an image section
                 if (imgs.length > 0 && parentRect.width > 0) {
                   const overlapW = Math.min(box.x + box.w, parentRect.right) - Math.max(box.x, parentRect.left);
                   const overlapH = Math.min(box.y + box.h, parentRect.bottom) - Math.max(box.y, parentRect.top);
@@ -1100,41 +1101,30 @@ async function runAudit() {
               }
             }
             return true;
-          });
-        }, rawClusters);
-        
-        // === COMPONENT-BASED REFINEMENT ===
-        // Snap clusters to nearest DOM component, but don't let the box grow too large
-        const finalClusters = await page.evaluate(async (raw) => {
-          return raw.filter(box => {
-            // Cap: skip boxes larger than 50% viewport width or 400px tall
-            if (box.w > window.innerWidth * 0.5 || box.h > 400) return false;
-            return true;
           }).map(box => {
+            // Snap to nearest DOM component
             const cx = box.x + box.w / 2;
             const cy = box.y + box.h / 2;
             const el = document.elementFromPoint(cx, cy);
             if (!el || el === document.body || el === document.documentElement) return box;
-            
-            // Find the nearest meaningful container
+
             let container = el;
             const stopTags = ['DIV', 'SECTION', 'ARTICLE', 'ASIDE', 'NAV', 'HEADER', 'FOOTER', 'MAIN'];
             while (container && container.parentElement && !stopTags.includes(container.tagName)) {
                if (container.offsetWidth > window.innerWidth * 0.5) break;
                container = container.parentElement;
             }
-            
+
             if (!container) return box;
             const r = container.getBoundingClientRect();
-            
-            // Only snap if the container isn't much bigger than the original cluster (max 2x)
+
             if (r.width > 10 && r.height > 10 && r.width < window.innerWidth * 0.5 &&
                 r.width <= box.w * 1.8 && r.height <= box.h * 1.8) {
               return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
             }
             return box;
           });
-        }, nonImageClusters);
+        }, rawClusters);
         
         // === MATCH FROM FIGMA TO LIVE: IoU-based filtering ===
         // For each visual cluster, find the best-overlapping LEAF Figma token.
@@ -1216,52 +1206,12 @@ async function runAudit() {
 
         console.log(`📦 Matched ${figmaMatchedClusters.length} visual clusters to Figma tokens (from ${finalClusters.length} candidates).`);
 
-        // --- SMART BOX ANALYSIS: identify DOM element + classify error type ---
-        // Capture crops for first 5 issues in parallel, then call Gemini in parallel.
-        console.log('🤖 Calling AI Vision for smart visual analysis (parallel)...');
-
-        const AI_LIMIT = Math.min(2, figmaMatchedClusters.length);
-
-        // Capture all crops concurrently
-        const cropBase64s = await Promise.all(
-          figmaMatchedClusters.slice(0, AI_LIMIT).map(box =>
-            page.screenshot({ clip: { x: box.x, y: box.y, width: box.w, height: box.h }, type: 'png' })
-              .then(buf => buf.toString('base64'))
-              .catch(() => null)
-          )
-        );
-
-        // Call Gemini Vision for all crops in parallel
-        const aiResults = await Promise.all(
-          cropBase64s.map((base64, i) => {
-            if (!base64) return Promise.resolve({ label: figmaMatchedNames[i], feedback: 'Visual difference detected.' });
-            return fetch(`${WORKER_URL}/api/vision`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                image: base64,
-                prompt: "Analyze this UI component error. Respond in exactly this format: 'Name: [Component Name] | Fix: [Short 1-sentence fix]'."
-              })
-            })
-            .then(r => r.ok ? r.json() : null)
-            .then(data => {
-              const analysis = data?.analysis || '';
-              if (analysis && !analysis.toLowerCase().includes('failed') && analysis.includes('|')) {
-                const [name, fix] = analysis.split('|');
-                return { label: name.replace('Name:', '').trim(), feedback: fix.replace('Fix:', '').trim() };
-              }
-              return { label: figmaMatchedNames[i], feedback: analysis || 'Visual difference detected.' };
-            })
-            .catch(() => ({ label: figmaMatchedNames[i], feedback: 'Visual difference detected.' }));
-          })
-        );
-
+        // Build visual issues directly from Figma-matched clusters (no AI needed)
         for (let i = 0; i < figmaMatchedClusters.length; i++) {
-            const ai = aiResults[i] || { label: figmaMatchedNames[i], feedback: 'Visual difference detected.' };
             visualIssues.push({
                 type: 'MAJOR_VISUAL',
-                element: ai.label,
-                details: [ai.feedback],
+                element: figmaMatchedNames[i] || 'Component',
+                details: ['Visual difference detected.'],
                 rect: figmaMatchedClusters[i]
             });
         }
