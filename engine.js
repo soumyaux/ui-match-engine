@@ -245,6 +245,72 @@ async function runAudit() {
       }
     }
 
+    // ── GEMINI VISION PAGE MATCH CHECK ──
+    // Runs BEFORE token validation — catches wrong pages early, saves ~5s on mismatches.
+    // Uses a quick viewport screenshot (no blackout, no fullPage) for speed.
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const figmaImgPath = process.env.FIGMA_IMAGE;
+    if (geminiKey && figmaImgPath && fs.existsSync(figmaImgPath)) {
+      try {
+        console.log('🤖 Running Gemini Vision page match check...');
+        const { PNG } = require('pngjs');
+
+        // Quick viewport-only screenshot (no blackout applied yet — real page)
+        const geminiLiveBuffer = await page.screenshot({ fullPage: false });
+
+        // Crop Figma PNG to viewport height (handles long scrollable frames)
+        const figmaFull = PNG.sync.read(fs.readFileSync(figmaImgPath));
+        const cropH = Math.min(figmaFull.height, frameHeight);
+        const figmaCropped = new PNG({ width: figmaFull.width, height: cropH });
+        for (let y = 0; y < cropH; y++) {
+          for (let x = 0; x < figmaFull.width; x++) {
+            const idx = (figmaFull.width * y + x) << 2;
+            figmaCropped.data[idx]     = figmaFull.data[idx];
+            figmaCropped.data[idx + 1] = figmaFull.data[idx + 1];
+            figmaCropped.data[idx + 2] = figmaFull.data[idx + 2];
+            figmaCropped.data[idx + 3] = figmaFull.data[idx + 3];
+          }
+        }
+        const figmaB64 = PNG.sync.write(figmaCropped).toString('base64');
+        const liveB64 = geminiLiveBuffer.toString('base64');
+
+        const geminiRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${geminiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { text: 'I have two webpage screenshots for a design audit. The first is a Figma design mockup. The second is a live website screenshot. Are these showing the same web page or very similar UI layout? Focus ONLY on page structure, navigation placement, section layout, and overall composition — ignore image content, placeholder text, and real data differences. Answer only YES or NO.' },
+                  { inline_data: { mime_type: 'image/png', data: figmaB64 } },
+                  { inline_data: { mime_type: 'image/png', data: liveB64 } }
+                ]
+              }],
+              generationConfig: { maxOutputTokens: 5 }
+            })
+          }
+        );
+
+        if (geminiRes.ok) {
+          const geminiJson = await geminiRes.json();
+          const answer = (geminiJson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim().toUpperCase();
+          console.log(`🤖 Gemini page match: ${answer}`);
+
+          if (answer.startsWith('NO')) {
+            console.error('❌ Gemini Vision: This page does not match the Figma design.');
+            fs.writeFileSync('playwright-report/error-log.txt',
+              'Wrong Page: This page does not visually match your Figma design. Please check that the URL matches your selected frame.');
+            process.exit(1);
+          }
+        } else {
+          console.warn(`⚠️ Gemini API returned ${geminiRes.status} — skipping check.`);
+        }
+      } catch (geminiErr) {
+        console.warn('⚠️ Gemini Vision check failed (non-critical):', geminiErr.message);
+      }
+    }
+
     // ══════════════════════════════════════════
     // PHASE 1: TOKEN CSS VALIDATION
     // ══════════════════════════════════════════
@@ -764,82 +830,6 @@ async function runAudit() {
 
     const liveScreenshotBuffer = await page.screenshot({ fullPage: true });
     fs.writeFileSync('playwright-report/live-screenshot.png', liveScreenshotBuffer);
-
-    // ── GEMINI VISION PAGE MATCH CHECK ──
-    // Runs AFTER blackout so images are normalized — Gemini compares layout/structure only.
-    const geminiKey = process.env.GEMINI_API_KEY;
-    const figmaImgPath = process.env.FIGMA_IMAGE;
-    if (geminiKey && figmaImgPath && fs.existsSync(figmaImgPath)) {
-      try {
-        console.log('🤖 Running Gemini Vision page match check...');
-        const { PNG } = require('pngjs');
-
-        // Crop Figma PNG to viewport height (handles long scrollable frames)
-        const figmaFull = PNG.sync.read(fs.readFileSync(figmaImgPath));
-        const cropH = Math.min(figmaFull.height, frameHeight);
-        const figmaCropped = new PNG({ width: figmaFull.width, height: cropH });
-        for (let y = 0; y < cropH; y++) {
-          for (let x = 0; x < figmaFull.width; x++) {
-            const idx = (figmaFull.width * y + x) << 2;
-            figmaCropped.data[idx]     = figmaFull.data[idx];
-            figmaCropped.data[idx + 1] = figmaFull.data[idx + 1];
-            figmaCropped.data[idx + 2] = figmaFull.data[idx + 2];
-            figmaCropped.data[idx + 3] = figmaFull.data[idx + 3];
-          }
-        }
-        const figmaB64 = PNG.sync.write(figmaCropped).toString('base64');
-
-        // Crop live screenshot to same viewport height
-        const liveFull = PNG.sync.read(liveScreenshotBuffer);
-        const liveCropH = Math.min(liveFull.height, frameHeight);
-        const liveCropped = new PNG({ width: liveFull.width, height: liveCropH });
-        for (let y = 0; y < liveCropH; y++) {
-          for (let x = 0; x < liveFull.width; x++) {
-            const idx = (liveFull.width * y + x) << 2;
-            liveCropped.data[idx]     = liveFull.data[idx];
-            liveCropped.data[idx + 1] = liveFull.data[idx + 1];
-            liveCropped.data[idx + 2] = liveFull.data[idx + 2];
-            liveCropped.data[idx + 3] = liveFull.data[idx + 3];
-          }
-        }
-        const liveB64 = PNG.sync.write(liveCropped).toString('base64');
-
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [
-                  { text: 'I have two webpage screenshots for a design audit. The first is a Figma design mockup. The second is a live website screenshot where images have been blacked out for comparison. Are these showing the same web page or very similar UI layout? Focus ONLY on page structure, navigation placement, section layout, and overall composition — ignore image content, placeholder text, and blacked-out areas. Answer only YES or NO.' },
-                  { inline_data: { mime_type: 'image/png', data: figmaB64 } },
-                  { inline_data: { mime_type: 'image/png', data: liveB64 } }
-                ]
-              }],
-              generationConfig: { maxOutputTokens: 5 }
-            })
-          }
-        );
-
-        if (geminiRes.ok) {
-          const geminiJson = await geminiRes.json();
-          const answer = (geminiJson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim().toUpperCase();
-          console.log(`🤖 Gemini page match: ${answer}`);
-
-          if (answer.startsWith('NO')) {
-            console.error('❌ Gemini Vision: This page does not match the Figma design.');
-            fs.writeFileSync('playwright-report/error-log.txt',
-              'Wrong Page: This page does not visually match your Figma design. Please check that the URL matches your selected frame.');
-            process.exit(1);
-          }
-        } else {
-          console.warn(`⚠️ Gemini API returned ${geminiRes.status} — skipping check.`);
-        }
-      } catch (geminiErr) {
-        console.warn('⚠️ Gemini Vision check failed (non-critical):', geminiErr.message);
-      }
-    }
 
     let visualIssues = [];
     let pixelMatchPercent = 100; // default if no Figma image
