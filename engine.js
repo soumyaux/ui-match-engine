@@ -1607,10 +1607,9 @@ async function runAudit() {
     const reportPage = await browser.newPage();
     await reportPage.setContent(reportHtml, { waitUntil: 'load' });
     await reportPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', format: 'A4', printBackground: true, margin: { top: '24px', bottom: '24px', left: '24px', right: '24px' } });
-    await reportPage.screenshot({ path: 'playwright-report/visual-audit-diff.png', fullPage: true });
 
     await reportPage.close();
-    console.log('📸 Visual report saved as visual-audit-diff.pdf + .png');
+    console.log('📸 Visual report saved as visual-audit-diff.pdf');
 
     const finalResults = {
       trueMatchScore,
