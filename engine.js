@@ -259,19 +259,11 @@ async function runAudit() {
         // Quick viewport-only screenshot (no blackout applied yet — real page)
         const geminiLiveBuffer = await page.screenshot({ fullPage: false });
 
-        // Crop Figma PNG to viewport height (handles long scrollable frames)
+        // Crop Figma PNG to viewport height using bulk TypedArray copy (faster than pixel loop)
         const figmaFull = PNG.sync.read(fs.readFileSync(figmaImgPath));
         const cropH = Math.min(figmaFull.height, frameHeight);
         const figmaCropped = new PNG({ width: figmaFull.width, height: cropH });
-        for (let y = 0; y < cropH; y++) {
-          for (let x = 0; x < figmaFull.width; x++) {
-            const idx = (figmaFull.width * y + x) << 2;
-            figmaCropped.data[idx]     = figmaFull.data[idx];
-            figmaCropped.data[idx + 1] = figmaFull.data[idx + 1];
-            figmaCropped.data[idx + 2] = figmaFull.data[idx + 2];
-            figmaCropped.data[idx + 3] = figmaFull.data[idx + 3];
-          }
-        }
+        figmaCropped.data.set(figmaFull.data.subarray(0, figmaFull.width * cropH * 4));
         const figmaB64 = PNG.sync.write(figmaCropped).toString('base64');
         const liveB64 = geminiLiveBuffer.toString('base64');
 
@@ -1322,17 +1314,17 @@ async function runAudit() {
     
     const screenshotPaths = [];
     for (let i = 0; i < maxScreenshots; i++) {
-        await page.evaluate(() => {
-          document.querySelectorAll('.audit-marker-box, .audit-marker-badge').forEach(el => el.remove());
-        });
-
         const chunkStart = i * issuesPerScreen;
         const chunkEnd = i === maxScreenshots - 1 ? allIssues.length : chunkStart + issuesPerScreen;
         const issueChunk = allIssues.slice(chunkStart, chunkEnd);
 
-        await page.evaluate(({ issues, palette }) => {
-            const placedBadges = [];
+        // Single evaluate: clear markers + draw new markers + calculate bounds (saves 2 IPC roundtrips)
+        const contentBounds = await page.evaluate(({ issues, palette }) => {
+            // 1. Clear old markers
+            document.querySelectorAll('.audit-marker-box, .audit-marker-badge').forEach(el => el.remove());
 
+            // 2. Draw new markers
+            const placedBadges = [];
             issues.forEach(issue => {
                 const isUnconnected = issue.type === 'TOKEN_UNCONNECTED';
                 const color = palette[(issue.issueNum - 1) % palette.length];
@@ -1341,7 +1333,6 @@ async function runAudit() {
                 const bw = issue.rect.w + 12;
                 const bh = issue.rect.h + 12;
 
-                // Draw a clean colored bounding box around the flagged component
                 const box = document.createElement('div');
                 box.className = 'audit-marker-box';
                 const r = parseInt(color.slice(1, 3), 16);
@@ -1352,65 +1343,46 @@ async function runAudit() {
 
                 let badgeX = bx - 14;
                 let badgeY = by - 14;
-
-                // Edge safety
                 badgeX = Math.max(10, badgeX);
                 badgeY = Math.max(10, badgeY);
 
-                // Collision Detection
-                const badgeWidth = 28;
-                const badgeHeight = 28;
-                const MARGIN = 4;
+                const badgeWidth = 28, badgeHeight = 28, MARGIN = 4;
                 let hasCollision = true;
                 while (hasCollision) {
                     hasCollision = false;
                     for (const placed of placedBadges) {
-                        if (
-                            badgeX < placed.x + badgeWidth + MARGIN &&
-                            badgeX + badgeWidth + MARGIN > placed.x &&
-                            badgeY < placed.y + badgeHeight + MARGIN &&
-                            badgeY + badgeHeight + MARGIN > placed.y
-                        ) {
+                        if (badgeX < placed.x + badgeWidth + MARGIN && badgeX + badgeWidth + MARGIN > placed.x &&
+                            badgeY < placed.y + badgeHeight + MARGIN && badgeY + badgeHeight + MARGIN > placed.y) {
                             badgeX = placed.x + badgeWidth + MARGIN;
                             hasCollision = true;
-                            if (badgeX > window.innerWidth - 40) {
-                                badgeX = bx - 14;
-                                badgeY += badgeHeight + MARGIN;
-                            }
+                            if (badgeX > window.innerWidth - 40) { badgeX = bx - 14; badgeY += badgeHeight + MARGIN; }
                             break;
                         }
                     }
                 }
                 placedBadges.push({ x: badgeX, y: badgeY });
 
-                // Issue number badge (circle)
                 const numBadge = document.createElement('div');
                 numBadge.className = 'audit-marker-badge';
                 numBadge.textContent = String(issue.issueNum);
                 numBadge.style.cssText = `position:absolute;z-index:10001;pointer-events:none;top:${badgeY}px;left:${badgeX}px;min-width:28px;height:28px;padding:0 6px;background:${color};color:white;border-radius:14px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:2px solid #fff;`;
                 document.body.appendChild(numBadge);
             });
+
+            // 3. Calculate content bounds
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            if (!issues || issues.length === 0) return { width: vw, height: vh };
+            let maxY = 0;
+            for (const issue of issues) {
+                const bottom = (issue.rect?.y || 0) + (issue.rect?.h || 0) + 80;
+                if (bottom > maxY) maxY = bottom;
+            }
+            return { width: vw, height: Math.min(Math.max(vh, maxY), 5000) };
         }, { issues: issueChunk, palette: ISSUE_PALETTE });
 
-        const path = `playwright-report/screenshot-chunk-${i+1}.png`;
-        // Full-page screenshot: capture from y=0 to bottom of last issue (+ padding)
-        // Always starts at top so user sees the full website context, not a tiny crop
-        const contentBounds = await page.evaluate((chunk) => {
-          const vw = window.innerWidth;
-          const vh = window.innerHeight;
-          if (!chunk || chunk.length === 0) return { width: vw, height: vh };
-
-          let maxY = 0;
-          for (const issue of chunk) {
-            const bottom = (issue.rect?.y || 0) + (issue.rect?.h || 0) + 80;
-            if (bottom > maxY) maxY = bottom;
-          }
-
-          return { width: vw, height: Math.min(Math.max(vh, maxY), 5000) };
-        }, issueChunk);
-        
-        await page.screenshot({ path, fullPage: true, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
-        const buffer = fs.readFileSync(path);
+        // Take screenshot directly into memory — no disk write/read roundtrip
+        const buffer = await page.screenshot({ fullPage: true, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
         screenshotPaths.push(buffer.toString('base64'));
     }
 
