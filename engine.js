@@ -1538,7 +1538,7 @@ async function runAudit() {
     if (error.message && error.message.includes('Abort')) {
       fs.writeFileSync('playwright-report/error-log.txt', error.message);
     } else {
-      fs.writeFileSync('playwright-report/error-log.txt', `Crash Report:\n${error.stack}`);
+      fs.writeFileSync('playwright-report/error-log.txt', `Unexpected error during audit. Please try again. (${error.message})`);
     }
     process.exit(1);
   } finally {
