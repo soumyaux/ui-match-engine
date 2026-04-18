@@ -954,9 +954,9 @@ async function runAudit() {
         console.log(`🎯 Visual: ${contentMatchPercent}% (raw: ${pixelMatchPercent}%, block: ${Math.round(blockScoreRaw)}%, coverage: ${Math.round(contentCoverage * 100)}%)`);
 
         // === FAIL FAST IF TOTAL MISMATCH ===
-        if (pixelMatchPercent < 40 || blockScoreRaw < 35) {
-          console.error(`🚨 TOTAL MISMATCH DETECTED (content: ${contentMatchPercent}%, raw: ${pixelMatchPercent}%). Aborting audit.`);
-          const msg = `Visual match is only ${contentMatchPercent}% (below 40% threshold). The live website does not resemble your Figma design, so the audit was not run. Please check the URL and try again.`;
+        if (pixelMatchPercent < 40 && blockScoreRaw < 35) {
+          console.error(`🚨 TOTAL MISMATCH DETECTED (raw: ${pixelMatchPercent}%, block: ${Math.round(blockScoreRaw)}%). Aborting audit.`);
+          const msg = `Visual match is too low (pixel match: ${pixelMatchPercent}%, layout match: ${Math.round(blockScoreRaw)}%). The live website does not resemble your Figma design, so the audit was not run. Please check the URL and try again.`;
           fs.writeFileSync('playwright-report/error-log.txt', msg);
           process.exit(1);
         }
