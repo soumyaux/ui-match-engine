@@ -1,5 +1,8 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
+const { PNG } = require('pngjs');
+const pixelmatchModule = require('pixelmatch');
+const pixelmatch = pixelmatchModule.default || pixelmatchModule;
 
 // Single source of truth for issue highlight colors.
 // Used in BOTH screenshot overlay and PDF issue cards so numbers always match colors.
@@ -32,8 +35,6 @@ async function runAudit() {
   let browser;
   try {
     const targetUrl = process.env.TARGET_URL;
-    // Worker URL kept for reference — currently unused after AI vision removal
-    // const WORKER_URL = 'https://ui-match-proxy.soumyasahoo473.workers.dev';
     let figmaTokens = [];
 
     // Read tokens from local file (downloaded from Supabase Storage)
@@ -254,7 +255,6 @@ async function runAudit() {
     if (geminiKey && figmaImgPath && fs.existsSync(figmaImgPath)) {
       try {
         console.log('🤖 Running Gemini Vision page match check...');
-        const { PNG } = require('pngjs');
 
         // Quick viewport-only screenshot (no blackout applied yet — real page)
         const geminiLiveBuffer = await page.screenshot({ fullPage: false });
@@ -822,7 +822,6 @@ async function runAudit() {
     await page.waitForTimeout(50);
 
     const liveScreenshotBuffer = await page.screenshot({ fullPage: true });
-    fs.writeFileSync('playwright-report/live-screenshot.png', liveScreenshotBuffer);
 
     let visualIssues = [];
     let pixelMatchPercent = 100; // default if no Figma image
@@ -832,9 +831,6 @@ async function runAudit() {
     if (figmaImagePath && fs.existsSync(figmaImagePath)) {
       console.log('🖼️ Running Pixelmatch Bounding Box Clustering...');
       try {
-        const { PNG } = require('pngjs');
-        const pixelmatchModule = require('pixelmatch');
-        const pixelmatch = pixelmatchModule.default || pixelmatchModule;
 
         const imgFigma = PNG.sync.read(fs.readFileSync(figmaImagePath));
         const imgLive = PNG.sync.read(liveScreenshotBuffer);
@@ -846,18 +842,11 @@ async function runAudit() {
         const cropLive = new Uint8Array(width * height * 4);
         const rawDiff = new PNG({ width, height });
 
+        // Row-based TypedArray copy — ~10x faster than pixel-by-pixel loop
+        const rowBytes = width * 4;
         for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-                const idxF = (imgFigma.width * y + x) << 2;
-                const idxL = (imgLive.width * y + x) << 2;
-                const idxDst = (width * y + x) << 2;
-
-                cropFigma[idxDst] = imgFigma.data[idxF]; cropFigma[idxDst+1] = imgFigma.data[idxF+1];
-                cropFigma[idxDst+2] = imgFigma.data[idxF+2]; cropFigma[idxDst+3] = imgFigma.data[idxF+3];
-
-                cropLive[idxDst] = imgLive.data[idxL]; cropLive[idxDst+1] = imgLive.data[idxL+1];
-                cropLive[idxDst+2] = imgLive.data[idxL+2]; cropLive[idxDst+3] = imgLive.data[idxL+3];
-            }
+            cropFigma.set(imgFigma.data.subarray(imgFigma.width * y * 4, imgFigma.width * y * 4 + rowBytes), y * rowBytes);
+            cropLive.set(imgLive.data.subarray(imgLive.width * y * 4, imgLive.width * y * 4 + rowBytes), y * rowBytes);
         }
 
         const mismatchedPixels = pixelmatch(cropFigma, cropLive, rawDiff.data, width, height, { threshold: 0.15 });
@@ -1219,47 +1208,19 @@ async function runAudit() {
     // ══════════════════════════════════════════
     console.log('🖨️ Generating Professional HTML Report...');
     
-    // combine all issues
-    const tokenMinor = tokenReport.filter(r => r.type === 'MINOR_DIFF');
-    const tokenLayout = tokenReport.filter(r => r.type === 'LAYOUT_SHIFT');
-    
-    // === FILTER VISUAL ISSUES: skip pixelmatch boxes that overlap with already-detected token issues ===
-    const tokenRects = [...tokenMinor, ...tokenLayout].map(r => r.rect);
-    const filteredVisual = visualIssues.filter(vi => {
-      // If a visual box significantly overlaps a token-detected box, skip it (already reported)
-      for (const tr of tokenRects) {
-        const overlapX = Math.max(0, Math.min(vi.rect.x + vi.rect.w, tr.x + tr.w) - Math.max(vi.rect.x, tr.x));
-        const overlapY = Math.max(0, Math.min(vi.rect.y + vi.rect.h, tr.y + tr.h) - Math.max(vi.rect.y, tr.y));
-        const overlapArea = overlapX * overlapY;
-        const viArea = vi.rect.w * vi.rect.h;
-        if (viArea > 0 && overlapArea / viArea > 0.3) return false; // 30%+ overlap = skip
-      }
-      return true;
-    });
-    
-    const tokenUnconnected = tokenReport.filter(r => r.type === 'TOKEN_UNCONNECTED');
-    let allIssues = [...tokenMinor, ...tokenLayout, ...filteredVisual, ...tokenUnconnected];
-
-    // Sort issues top-to-bottom (by Y position), and left-to-right (by X position) for natural reading order
-    allIssues.sort((a, b) => {
-        if (Math.abs(a.rect.y - b.rect.y) > 10) return a.rect.y - b.rect.y;
-        return a.rect.x - b.rect.x;
-    });
-    
-    // Assign issue numbers sequentially (now in top-to-bottom order)
-    allIssues.forEach((issue, index) => {
-        issue.issueNum = index + 1;
-    });
-
-    // Use the REAL pixel-level match score for visual, and calculate token score for structure
-    // Each checked token (represented by a result in tokenReport) checks around 5-8 properties.
-    const validTokensCount = tokenReport.filter(r => r.type !== 'MAJOR_VISUAL' && r.element !== 'Missing Element').length;
+    // Single pass over tokenReport — replaces 6 separate .filter() calls
+    const tokenMinor = [], tokenLayout = [], tokenUnconnected = [];
+    let validTokensCount = 0, missingCount = 0;
+    for (const r of tokenReport) {
+      if (r.element === 'Missing Element') { missingCount++; continue; }
+      if (r.type !== 'MAJOR_VISUAL') validTokensCount++;
+      if (r.type === 'MINOR_DIFF') tokenMinor.push(r);
+      else if (r.type === 'LAYOUT_SHIFT') tokenLayout.push(r);
+      else if (r.type === 'TOKEN_UNCONNECTED') tokenUnconnected.push(r);
+    }
 
     // --- WRONG PAGE FAIL-FAST (missing element ratio) ---
-    // If >60% of Figma tokens find no matching element on the live page, it's the wrong page.
-    // Bug: when all elements are missing, totalErrorsFound=0 → trueMatchScore=100% (formula blind spot).
     const totalTokensChecked = tokenReport.length;
-    const missingCount = tokenReport.filter(r => r.element === 'Missing Element').length;
     if (totalTokensChecked > 5 && missingCount / totalTokensChecked > 0.6) {
       console.log(`❌ WRONG PAGE: ${missingCount}/${totalTokensChecked} Figma tokens not found on page.`);
       fs.writeFileSync('playwright-report/error-log.txt',
@@ -1267,15 +1228,32 @@ async function runAudit() {
       process.exit(1);
     }
 
+    // === FILTER VISUAL ISSUES: skip boxes that overlap already-detected token issues ===
+    const tokenRects = [...tokenMinor, ...tokenLayout].map(r => r.rect);
+    const filteredVisual = visualIssues.filter(vi => {
+      for (const tr of tokenRects) {
+        const overlapX = Math.max(0, Math.min(vi.rect.x + vi.rect.w, tr.x + tr.w) - Math.max(vi.rect.x, tr.x));
+        const overlapY = Math.max(0, Math.min(vi.rect.y + vi.rect.h, tr.y + tr.h) - Math.max(vi.rect.y, tr.y));
+        const overlapArea = overlapX * overlapY;
+        const viArea = vi.rect.w * vi.rect.h;
+        if (viArea > 0 && overlapArea / viArea > 0.3) return false;
+      }
+      return true;
+    });
+
+    let allIssues = [...tokenMinor, ...tokenLayout, ...filteredVisual, ...tokenUnconnected];
+    allIssues.sort((a, b) => {
+        if (Math.abs(a.rect.y - b.rect.y) > 10) return a.rect.y - b.rect.y;
+        return a.rect.x - b.rect.x;
+    });
+    allIssues.forEach((issue, index) => { issue.issueNum = index + 1; });
+
     const visualMatchScore = contentMatchPercent;
     let totalErrorsFound = 0;
     allIssues.forEach(i => {
         if (i.type !== 'MAJOR_VISUAL' && i.type !== 'TOKEN_UNCONNECTED' && i.details) totalErrorsFound += i.details.length;
     });
-
-    // Count missing elements as errors so trueMatchScore reflects them
-    const missingElementCount = tokenReport.filter(r => r.element === 'Missing Element').length;
-    totalErrorsFound += missingElementCount * 8;
+    totalErrorsFound += missingCount * 8;
 
     // Dynamically scale total rules evaluated to accurately reflect the volume of tokens vs volume of errors.
     const totalRulesChecked = Math.max(validTokensCount * 12, totalErrorsFound + Math.max(10, validTokensCount * 2));
