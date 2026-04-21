@@ -28,11 +28,12 @@ on:
         default: ""
 
 permissions:
-  contents: read   # least privilege — workflow only needs to read repo files
+  contents: read
 
 jobs:
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v5
@@ -44,53 +45,53 @@ jobs:
       - name: 🚦 Mark Scan Running
         if: ${{ github.event.inputs.scan_id != '' }}
         run: |
-          SCAN_ID="${{ github.event.inputs.scan_id }}"
-          curl -X PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.$SCAN_ID" \
+          curl -sX PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.${{ github.event.inputs.scan_id }}" \
             -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
             -d '{"audit_status": "running"}'
 
-
-      - name: 📥 Download Design Tokens
-        if: ${{ github.event.inputs.tokens_url != '' }}
+      - name: 📥 Download Tokens + Figma Image (parallel)
         run: |
-          curl -sL "${{ github.event.inputs.tokens_url }}" -o tokens.json
-          echo "Tokens file size: $(wc -c < tokens.json) bytes"
-          echo "Token count: $(cat tokens.json | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 'unknown')"
+          if [ -n "${{ github.event.inputs.tokens_url }}" ]; then
+            curl -sL "${{ github.event.inputs.tokens_url }}" -o tokens.json &
+          fi
+          if [ -n "${{ github.event.inputs.figma_image_url }}" ]; then
+            curl -sL "${{ github.event.inputs.figma_image_url }}" -o figma-frame.png &
+          fi
+          wait
+          [ -f tokens.json ] && echo "Tokens: $(wc -c < tokens.json) bytes"
+          [ -f figma-frame.png ] && echo "Figma PNG: $(wc -c < figma-frame.png) bytes"
 
-      - name: 🖼️ Download Figma Frame Image
-        if: ${{ github.event.inputs.figma_image_url != '' }}
-        run: |
-          curl -sL "${{ github.event.inputs.figma_image_url }}" -o figma-frame.png
-          echo "Figma image size: $(wc -c < figma-frame.png) bytes"
-
-      - name: 📦 Cache Node Modules
-        id: cache-npm
+      - name: 📦 Cache node_modules
+        id: cache-node-modules
         uses: actions/cache@v5
         with:
-          path: ~/.npm
-          key: ${{ runner.os }}-build-npm-${{ hashFiles('**/package-lock.json') }}
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-v1-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-build-npm-
+            ${{ runner.os }}-node-modules-v1-
 
       - name: 📦 Cache Playwright Binaries
         id: cache-playwright
         uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('**/package-lock.json') }}
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-playwright-
 
-      - name: Install & Run Engine
-        run: |
-          npm install playwright pixelmatch pngjs
-          if [ "${{ steps.cache-playwright.outputs.cache-hit }}" != "true" ]; then
-            npx playwright install --with-deps chromium
-          fi
-          node engine.js
+      - name: Install Dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm install playwright pixelmatch pngjs
+
+      - name: Install Playwright Browser
+        if: steps.cache-playwright.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: 🔍 Run Audit Engine
+        run: node engine.js
         env:
           TARGET_URL: ${{ github.event.inputs.url }}
           TOKENS_FILE: tokens.json
@@ -103,51 +104,39 @@ jobs:
 
       - name: 📸 Upload PDF Report to Supabase
         if: always()
-        env:
-          SESSION_ID: ${{ github.event.inputs.session_id }}
         run: |
-          FINAL_ID="${SESSION_ID:-manual_run}"
-
+          FINAL_ID="${{ github.event.inputs.session_id }}"
+          FINAL_ID="${FINAL_ID:-manual_run}"
           if [ -f "playwright-report/visual-audit-diff.pdf" ]; then
-            curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/${FINAL_ID}.pdf" \
+            curl -sX POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/${FINAL_ID}.pdf" \
               -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
               -H "Content-Type: application/pdf" \
               -H "x-upsert: true" \
               --data-binary @"playwright-report/visual-audit-diff.pdf"
-            echo "PDF uploaded successfully"
+            echo "PDF uploaded"
           else
-            echo "No PDF found — audit may have failed"
+            echo "No PDF found"
           fi
 
-      - name: ✅ Update Scan Status to Completed
+      - name: ✅ Mark Completed
         if: ${{ success() && github.event.inputs.scan_id != '' }}
         run: |
-          SCAN_ID="${{ github.event.inputs.scan_id }}"
-
-          # Extract scores from the engine output, default to 0 if missing
           TRUE_SCORE=$(jq -r '.trueMatchScore // 0' playwright-report/audit-results.json 2>/dev/null || echo 0)
           VISUAL_SCORE=$(jq -r '.visualMatchScore // 0' playwright-report/audit-results.json 2>/dev/null || echo 0)
-
-          curl -X PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.$SCAN_ID" \
+          curl -sX PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.${{ github.event.inputs.scan_id }}" \
             -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
             -d "{\"audit_status\": \"completed\", \"true_match_percent\": $TRUE_SCORE, \"visual_match_percent\": $VISUAL_SCORE}"
 
-      - name: ❌ Update Scan Status to Failed
+      - name: ❌ Mark Failed
         if: ${{ failure() && github.event.inputs.scan_id != '' }}
         run: |
-          SCAN_ID="${{ github.event.inputs.scan_id }}"
-
-          # Read error message from engine report if available
           ERROR_MSG="Audit failed unexpectedly."
-          if [ -f "playwright-report/error-log.txt" ]; then
-            ERROR_MSG=$(cat playwright-report/error-log.txt | head -c 500)
-          fi
-          # Escape for JSON
+          [ -f "playwright-report/error-log.txt" ] && ERROR_MSG=$(head -c 500 playwright-report/error-log.txt)
           ERROR_JSON=$(echo "$ERROR_MSG" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip()))' 2>/dev/null || echo '"Audit failed"')
-          curl -X PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.$SCAN_ID" \
+          curl -sX PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.${{ github.event.inputs.scan_id }}" \
             -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Content-Type: application/json" \
