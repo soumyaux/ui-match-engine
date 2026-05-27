@@ -208,6 +208,9 @@ async function runAudit() {
                                    'access denied', 'unauthorized', '403 forbidden'];
         const titleIsAuth = authTitlePatterns.some(p => title.includes(p));
 
+        // 3b. Body has a meaningful login form (not just a nav "Sign in" link)
+        const hasLoginFormInBody = /\b(enter\s*your\s*(email|password|username)|forgot\s*password|remember\s*me|create\s*an?\s*account|authentication\s*required)\b/i.test(bodyText);
+
         // 4. Cloudflare / bot challenge detection
         const isCfChallenge = !!document.querySelector('#challenge-running, #cf-challenge-running, .cf-browser-verification')
                               || bodyText.includes('checking your browser')
@@ -218,7 +221,7 @@ async function runAudit() {
         const visibleTextLength = bodyText.replace(/\s+/g, '').length;
         const isNearlyEmpty = visibleTextLength < 100;
 
-        return { urlIsLogin, hasPasswordField, titleIsAuth, isCfChallenge, isNearlyEmpty };
+        return { urlIsLogin, hasPasswordField, titleIsAuth, hasLoginFormInBody, isCfChallenge, isNearlyEmpty };
       });
 
       if (authCheck.isCfChallenge) {
@@ -228,7 +231,10 @@ async function runAudit() {
         process.exit(1);
       }
 
-      if (authCheck.hasPasswordField || (authCheck.urlIsLogin && authCheck.titleIsAuth)) {
+      // Password field alone is not enough — many public pages embed a login widget in the nav.
+      // Require at least one corroborating signal (auth URL or auth title) before blocking.
+      const isLoginPage = authCheck.urlIsLogin || authCheck.titleIsAuth;
+      if ((authCheck.hasPasswordField && isLoginPage) || (authCheck.urlIsLogin && authCheck.titleIsAuth && authCheck.hasLoginFormInBody)) {
         console.error('❌ Login/authentication page detected.');
         fs.writeFileSync('playwright-report/error-log.txt',
           'UI Match can\'t access pages that require a login. Please provide a publicly accessible URL.');
