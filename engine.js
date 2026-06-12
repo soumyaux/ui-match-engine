@@ -242,13 +242,13 @@ async function runAudit() {
       }
 
       if (httpStatus === 401 || httpStatus === 403) {
-        if (authCheck.isNearlyEmpty) {
-          console.error('❌ Page returned 403 with minimal content.');
+        if (authCheck.isNearlyEmpty || authCheck.titleIsAuth) {
+          console.error(`❌ Page returned ${httpStatus} — access blocked.`);
           fs.writeFileSync('playwright-report/error-log.txt',
             'Access denied (HTTP 403). The website blocked the request. Please try a publicly accessible URL.');
           process.exit(1);
         }
-        // Page has real content despite 403 — proceed
+        // Page has real content despite 4xx — proceed (e.g. SPA that renders despite 403 header)
         console.log(`✅ Auth check passed: page has content despite HTTP ${httpStatus}. Continuing audit.`);
       }
     }
@@ -287,7 +287,12 @@ async function runAudit() {
                 ]
               }],
               generationConfig: { maxOutputTokens: 5 }
-            })
+            }),
+            // NEW generous safety net (no timeout existed before): a hung Gemini call
+            // used to stall the job until GitHub's 10-min cancel, and cancelled jobs
+            // skip the "Mark Failed" step — leaving the scan stuck in "running".
+            // On abort, the catch below logs a warning and the audit CONTINUES.
+            signal: AbortSignal.timeout(60000)
           }
         );
 
@@ -416,21 +421,50 @@ async function runAudit() {
         try { _cachedSheetRules.push(...Array.from(sheet.cssRules || [])); } catch(e) {}
       }
       const _inheritableProps = new Set(['color','font-size','font-family','font-weight','letter-spacing','line-height','text-align','text-decoration','text-transform','opacity']);
+      // Lazy per-property rule index: only rules whose value for that property is a
+      // var(). Rules without one could never make the check pass, so scanning this
+      // short list is behavior-identical to walking ALL rules (with an expensive
+      // node.matches per rule) for every token.
+      const _varRulesByProp = new Map();
+      function _getVarRules(cssProperty) {
+        let rules = _varRulesByProp.get(cssProperty);
+        if (!rules) {
+          rules = [];
+          for (const rule of _cachedSheetRules) {
+            try {
+              if (rule.selectorText && rule.style) {
+                const val = rule.style.getPropertyValue(cssProperty);
+                if (val && val.trim().startsWith('var(')) rules.push(rule);
+              }
+            } catch(e) {}
+          }
+          _varRulesByProp.set(cssProperty, rules);
+        }
+        return rules;
+      }
+      // Memo per (element, property) — ancestor walks re-checked the same page
+      // wrappers for nearly every token. Styles are static at this point.
+      const _varCheckMemo = new WeakMap();
       function hasCSSVarForProperty(el, cssProperty, checkAncestors) {
         const _check = (node) => {
+          let memo = _varCheckMemo.get(node);
+          if (memo && memo.has(cssProperty)) return memo.get(cssProperty);
+          let found = false;
           try {
             const inlineVal = node.style.getPropertyValue(cssProperty);
-            if (inlineVal && inlineVal.trim().startsWith('var(')) return true;
-            for (const rule of _cachedSheetRules) {
-              try {
-                if (rule.selectorText && node.matches(rule.selectorText)) {
-                  const val = rule.style?.getPropertyValue(cssProperty);
-                  if (val && val.trim().startsWith('var(')) return true;
-                }
-              } catch(e) {}
+            if (inlineVal && inlineVal.trim().startsWith('var(')) {
+              found = true;
+            } else {
+              for (const rule of _getVarRules(cssProperty)) {
+                try {
+                  if (node.matches(rule.selectorText)) { found = true; break; }
+                } catch(e) {}
+              }
             }
           } catch(e) {}
-          return false;
+          if (!memo) { memo = new Map(); _varCheckMemo.set(node, memo); }
+          memo.set(cssProperty, found);
+          return found;
         };
         if (_check(el)) return true;
         if (checkAncestors !== false && _inheritableProps.has(cssProperty)) {
@@ -1119,29 +1153,34 @@ async function runAudit() {
         // Use the Figma token name as the issue label (not DOM names like "div.flex").
         const figmaMatchedClusters = [];
         const figmaMatchedNames = [];
-        
+
+        // Pre-filter tokens ONCE instead of re-running the string analysis for every
+        // cluster (was O(clusters × tokens × string-ops)). Skipped tokens could never
+        // become bestToken, so the output is identical.
+        const matchableTokens = designTokens.filter(token => {
+          // Skip container tokens — they cover entire sections and match everything
+          if (token.role === 'container') return false;
+          // Skip tiny spacers
+          if ((token.w || 0) < 15 && (token.h || 0) < 15) return false;
+          // Skip purely decorative shape tokens — visual diffs on decorative fills are noise
+          const tName = (token.name || '').toLowerCase();
+          const tIsDecor = tName.includes('image') || tName.includes('img') || tName.includes('icon') ||
+              tName.includes('logo') || tName.includes('photo') || tName.includes('illustration') ||
+              tName === 'bg' || tName.endsWith(' bg') || tName.startsWith('bg ') ||
+              tName.includes('background') || tName.includes('divider') || tName.includes('separator') ||
+              token.type === 'VECTOR' || token.type === 'BOOLEAN_OPERATION' ||
+              token.type === 'STAR' || token.type === 'LINE' || token.type === 'POLYGON' ||
+              ((token.type === 'RECTANGLE' || token.type === 'ELLIPSE') &&
+               (tName.includes('bg') || tName.includes('background') || tName.includes('decor') ||
+                tName.includes('fill') || tName.includes('shape')));
+          return !tIsDecor;
+        });
+
         for (const box of finalClusters) {
           let bestToken = null;
           let bestIoU = 0;
 
-          for (const token of designTokens) {
-            // Skip container tokens — they cover entire sections and match everything
-            if (token.role === 'container') continue;
-            // Skip tiny spacers
-            if ((token.w || 0) < 15 && (token.h || 0) < 15) continue;
-            // Skip purely decorative shape tokens — visual diffs on decorative fills are noise
-            const tName = (token.name || '').toLowerCase();
-            const tIsDecor = tName.includes('image') || tName.includes('img') || tName.includes('icon') ||
-                tName.includes('logo') || tName.includes('photo') || tName.includes('illustration') ||
-                tName === 'bg' || tName.endsWith(' bg') || tName.startsWith('bg ') ||
-                tName.includes('background') || tName.includes('divider') || tName.includes('separator') ||
-                token.type === 'VECTOR' || token.type === 'BOOLEAN_OPERATION' ||
-                token.type === 'STAR' || token.type === 'LINE' || token.type === 'POLYGON' ||
-                ((token.type === 'RECTANGLE' || token.type === 'ELLIPSE') &&
-                 (tName.includes('bg') || tName.includes('background') || tName.includes('decor') ||
-                  tName.includes('fill') || tName.includes('shape')));
-            if (tIsDecor) continue;
-            
+          for (const token of matchableTokens) {
             const tx = token.x || 0, ty = token.y || 0;
             const tw = token.w || 0, th = token.h || 0;
             
