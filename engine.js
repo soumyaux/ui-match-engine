@@ -1594,22 +1594,53 @@ async function runAudit() {
   </div>
   ${auditSections}
 
-  <!-- Premium Footer — pinned to the bottom of the report's last page -->
-  <div style="page-break-before: always; height: 1040px; display: flex; flex-direction: column; justify-content: flex-end;">
-    <div style="margin: 0 24px; background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; display: flex; justify-content: space-between; align-items: center; break-inside: avoid; page-break-inside: avoid;">
-      <div style="font-size: 14px; color: #475569;">
-        Designed & built with <span style="color:#ef4444">❤️</span> by
-        <a href="https://in.linkedin.com/in/soumyaux/" target="_blank" style="color:#0f5ec4; font-weight: 700; text-decoration: none;">Soumya</a>
-      </div>
-      <a href="https://in.linkedin.com/in/soumyaux/" target="_blank" style="background: #0f5ec4; color: #fff; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; text-decoration: none; box-shadow: 0 2px 4px rgba(15,94,196,0.3);">Let's Connect</a>
+  <!-- Premium Footer — pinned to the bottom of the page where the content ends.
+       #footer-spacer height is computed at render time (see PDF render step). -->
+  <div id="footer-spacer" style="height:0;"></div>
+  <div style="margin: 24px 24px 0; background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; display: flex; justify-content: space-between; align-items: center; break-inside: avoid; page-break-inside: avoid;">
+    <div style="font-size: 14px; color: #475569;">
+      Designed & built with <span style="color:#ef4444">❤️</span> by
+      <a href="https://in.linkedin.com/in/soumyaux/" target="_blank" style="color:#0f5ec4; font-weight: 700; text-decoration: none;">Soumya</a>
     </div>
+    <a href="https://in.linkedin.com/in/soumyaux/" target="_blank" style="background: #0f5ec4; color: #fff; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; text-decoration: none; box-shadow: 0 2px 4px rgba(15,94,196,0.3);">Let's Connect</a>
   </div>
 </body></html>`;
 
-    // 5. Render final PDF report
+    // 5. Render final PDF report.
+    // The footer must sit at the BOTTOM of the page where the content ends — but
+    // print CSS can't know how much space is left on that page (break-inside:avoid
+    // cards shift content unpredictably). So we let the real print engine decide:
+    // binary-search the #footer-spacer height for the largest value that does NOT
+    // add a new page. That pushes the footer flush to the bottom of the last page.
     const reportPage = await browser.newPage();
     await reportPage.setContent(reportHtml, { waitUntil: 'load' });
-    await reportPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', format: 'A4', printBackground: true, margin: { top: '24px', bottom: '24px', left: '24px', right: '24px' } });
+
+    const pdfOptions = { format: 'A4', printBackground: true, margin: { top: '24px', bottom: '24px', left: '24px', right: '24px' } };
+    const countPdfPages = (buf) => {
+      const counts = buf.toString('latin1').match(/\/Count (\d+)/g);
+      return counts ? Math.max(...counts.map(c => parseInt(c.slice(7), 10))) : 1;
+    };
+    const setFooterSpacer = (px) => reportPage.evaluate((h) => {
+      document.getElementById('footer-spacer').style.height = h + 'px';
+    }, px);
+
+    try {
+      const basePageCount = countPdfPages(await reportPage.pdf(pdfOptions));
+      // A4 printable height ≈ 1074px (1122px page minus 24px top/bottom margins)
+      let lo = 0, hi = 1075;
+      while (hi - lo > 4) {
+        const mid = Math.floor((lo + hi) / 2);
+        await setFooterSpacer(mid);
+        if (countPdfPages(await reportPage.pdf(pdfOptions)) > basePageCount) hi = mid;
+        else lo = mid;
+      }
+      await setFooterSpacer(lo);
+    } catch (spacerErr) {
+      // Non-critical: fall back to the footer flowing right after the content
+      console.warn('⚠️ Footer positioning failed (non-critical):', spacerErr.message);
+      await setFooterSpacer(0).catch(() => {});
+    }
+    await reportPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', ...pdfOptions });
 
     await reportPage.close();
     console.log('📸 Visual report saved as visual-audit-diff.pdf');
