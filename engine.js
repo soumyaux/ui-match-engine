@@ -484,6 +484,44 @@ async function runAudit() {
       const seenElements = new Map(); // DOM element → index in results
       const checkedPositions = new Set();
 
+      // === SHADOW SCORING (log-only — never displayed, never affects results) ===
+      // Counts every comparison actually performed, BEFORE report dedup/filtering,
+      // so the Action log can show an honest pass/fail ratio next to the displayed
+      // score. Fully guarded: any error here is swallowed and the audit continues.
+      const _shadow = { checked: 0, failed: 0, missing: 0 };
+      function _shadowRuleCount(design, role, isTangible) {
+        let n = 0;
+        try {
+          if (role === 'text' || design.fs) {
+            if (design.fs && design.fs !== 'Mixed') n++;
+            if (design.ff && design.ff !== 'Mixed') n++;
+            if (design.fw && design.fw !== 'Mixed') n++;
+            if (design.color && design.color !== 'Mixed') n++;
+            if (design.ls !== undefined && design.ls !== 'Mixed') n++;
+            if (design.lh !== undefined && design.lh !== 'Mixed') n++;
+            if (design.ta && design.ta !== 'Mixed' && String(design.ta).toLowerCase() !== 'left') n++;
+            if (design.td && design.td !== 'Mixed') n++;
+            if (design.tt && design.tt !== 'Mixed') n++;
+          }
+          if (role !== 'text') {
+            if (design.bg && design.bg.length > 0) n++;
+            if (design.br !== undefined && design.br !== 'Mixed' && design.br > 0) n++;
+            if (design.op !== undefined && design.op < 1) n++;
+            if (design.bw !== undefined && design.bw > 0) n++;
+            if (design.bc) n++;
+          }
+          if (role === 'container' || design.pad || design.gap !== undefined) {
+            if (design.pad && Array.isArray(design.pad)) design.pad.forEach(p => { if (p > 0) n++; });
+            if (design.gap !== undefined) n++;
+          }
+          if (role === 'leaf' && isTangible) {
+            if (design.w !== undefined && design.w > 0) n++;
+            if (design.h !== undefined && design.h > 0) n++;
+          }
+        } catch (e) {}
+        return n;
+      }
+
       tokens.forEach((design) => {
         const name = design.name || 'unknown';
         // Skip tiny spacer/divider tokens that aren't meaningful UI components
@@ -539,6 +577,14 @@ async function runAudit() {
           if (isImageOrDecor) return;
           // Only report if the Figma token is large enough to be a real component (not a spacer)
           if ((design.w || 0) > 50 && (design.h || 0) > 50) {
+            // Shadow scoring: a missing element means every check it would have had
+            // failed (floor of 4) — counted before report dedup hides duplicates
+            try {
+              const _n = Math.max(_shadowRuleCount(design, design.role || 'leaf', false), 4);
+              _shadow.checked += _n;
+              _shadow.failed += _n;
+              _shadow.missing++;
+            } catch (e) {}
             const missingKey = `missing_${Math.round(cx / 20)}_${Math.round(cy / 20)}`;
             if (!seenElements.has(missingKey)) {
               seenElements.set(missingKey, results.length);
@@ -754,6 +800,15 @@ async function runAudit() {
           if (_css && hasCSSVarForProperty(el, _css)) errors[_i] = '~' + errors[_i];
         }
 
+        // Shadow scoring: tally this element's comparisons before report dedup.
+        // '~' entries are CSS-var sync warnings, not failures (parity with the
+        // displayed score, which also excludes TOKEN_UNCONNECTED issues).
+        try {
+          const _failedHere = errors.filter(e => !e.startsWith('~')).length;
+          _shadow.checked += Math.max(_shadowRuleCount(design, role, isTangible), _failedHere);
+          _shadow.failed += _failedHere;
+        } catch (e) {}
+
         if (errors.length > 0) {
           // === DEDUP: check if this DOM element was already reported ===
           // Use a unique key based on element tag + position to detect same element
@@ -843,8 +898,12 @@ async function runAudit() {
           }
         }
       });
+      try { window.__shadowScore = _shadow; } catch (e) {}
       return results;
     }, designTokens);
+
+    // Shadow scoring stats (log-only). Failure here must never affect the audit.
+    const shadowStats = await page.evaluate(() => window.__shadowScore || null).catch(() => null);
 
     // ══════════════════════════════════════════
     // PHASE 2: VISUAL PIXEL MATCH & CLUSTERING
@@ -867,6 +926,12 @@ async function runAudit() {
     let pixelMatchPercent = 100; // default if no Figma image
     let contentMatchPercent = 100;
     const figmaImagePath = process.env.FIGMA_IMAGE;
+
+    if (!figmaImagePath || !fs.existsSync(figmaImagePath)) {
+      // Log-only flag for calibration: today the visual score silently defaults to
+      // a perfect 100% when there is no Figma image to compare against.
+      console.log('🕵️ SHADOW VISUAL NOTE: no Figma image available — visual score defaulted to 100% without any comparison.');
+    }
 
     if (figmaImagePath && fs.existsSync(figmaImagePath)) {
       console.log('🖼️ Running Pixelmatch Bounding Box Clustering...');
@@ -1303,9 +1368,25 @@ async function runAudit() {
     // Dynamically scale total rules evaluated to accurately reflect the volume of tokens vs volume of errors.
     const totalRulesChecked = Math.max(validTokensCount * 12, totalErrorsFound + Math.max(10, validTokensCount * 2));
     
-    const trueMatchScore = totalRulesChecked > 0 
+    const trueMatchScore = totalRulesChecked > 0
         ? Math.max(0, Math.round(((totalRulesChecked - totalErrorsFound) / totalRulesChecked) * 100))
         : 100;
+
+    // --- SHADOW TOKEN SCORE (log-only, for calibration) ---
+    // Honest ratio of failed vs actually-performed comparisons, counted before
+    // report dedup. NOT displayed anywhere — compare against trueMatchScore in
+    // the Action logs before deciding to switch the displayed formula.
+    try {
+      if (shadowStats && shadowStats.checked > 0) {
+        const _denom = Math.max(shadowStats.checked, 10); // small-sample floor
+        const shadowScore = Math.max(0, Math.round(((_denom - shadowStats.failed) / _denom) * 100));
+        console.log(`🕵️ SHADOW TOKEN SCORE: ${shadowScore}% (displayed: ${trueMatchScore}%) — rules checked: ${shadowStats.checked}, failed: ${shadowStats.failed}, missing elements: ${shadowStats.missing}`);
+      } else {
+        console.log(`🕵️ SHADOW TOKEN SCORE: unavailable — no comparisons counted (displayed: ${trueMatchScore}%)`);
+      }
+    } catch (shadowErr) {
+      console.log('🕵️ SHADOW TOKEN SCORE: compute failed (non-critical):', shadowErr.message);
+    }
 
     // --- MATHEMATICAL MISMATCH FAST-FAIL ---
     // If < 15% Match Score, the layout structure completely deviates from the Figma Tokens.
