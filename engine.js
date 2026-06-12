@@ -1594,13 +1594,15 @@ async function runAudit() {
   </div>
   ${auditSections}
 
-  <!-- Premium Footer -->
-  <div style="margin: 32px 24px 24px; background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; display: flex; justify-content: space-between; align-items: center; break-inside: avoid; page-break-inside: avoid;">
-    <div style="font-size: 14px; color: #475569;">
-      Designed & built with <span style="color:#ef4444">❤️</span> by 
-      <a href="https://in.linkedin.com/in/soumyaux/" target="_blank" style="color:#0f5ec4; font-weight: 700; text-decoration: none;">Soumya</a>
+  <!-- Premium Footer — pinned to the bottom of the report's last page -->
+  <div style="page-break-before: always; height: 1040px; display: flex; flex-direction: column; justify-content: flex-end;">
+    <div style="margin: 0 24px; background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; display: flex; justify-content: space-between; align-items: center; break-inside: avoid; page-break-inside: avoid;">
+      <div style="font-size: 14px; color: #475569;">
+        Designed & built with <span style="color:#ef4444">❤️</span> by
+        <a href="https://in.linkedin.com/in/soumyaux/" target="_blank" style="color:#0f5ec4; font-weight: 700; text-decoration: none;">Soumya</a>
+      </div>
+      <a href="https://in.linkedin.com/in/soumyaux/" target="_blank" style="background: #0f5ec4; color: #fff; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; text-decoration: none; box-shadow: 0 2px 4px rgba(15,94,196,0.3);">Let's Connect</a>
     </div>
-    <a href="https://in.linkedin.com/in/soumyaux/" target="_blank" style="background: #0f1b35; color: #fff; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; text-decoration: none; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">Let's Connect</a>
   </div>
 </body></html>`;
 
