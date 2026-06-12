@@ -42,18 +42,16 @@ jobs:
         with:
           node-version: "24"
 
-      - name: 🚦 Mark Scan Running
-        if: ${{ github.event.inputs.scan_id != '' }}
+      - name: 🚦 Mark Running + Download Inputs (parallel)
         run: |
-          curl -sX PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.${{ github.event.inputs.scan_id }}" \
-            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-            -H "Content-Type: application/json" \
-            -H "Prefer: return=minimal" \
-            -d '{"audit_status": "running"}'
-
-      - name: 📥 Download Tokens + Figma Image (parallel)
-        run: |
+          if [ -n "${{ github.event.inputs.scan_id }}" ]; then
+            curl -sX PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.${{ github.event.inputs.scan_id }}" \
+              -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+              -H "Content-Type: application/json" \
+              -H "Prefer: return=minimal" \
+              -d '{"audit_status": "running"}' &
+          fi
           if [ -n "${{ github.event.inputs.tokens_url }}" ]; then
             curl -sL "${{ github.event.inputs.tokens_url }}" -o tokens.json &
           fi
@@ -64,31 +62,25 @@ jobs:
           [ -f tokens.json ] && echo "Tokens: $(wc -c < tokens.json) bytes"
           [ -f figma-frame.png ] && echo "Figma PNG: $(wc -c < figma-frame.png) bytes"
 
-      - name: 📦 Cache node_modules
-        id: cache-node-modules
+      # Single combined cache (was two separate cache steps = two sequential
+      # restore round-trips). node_modules and the Playwright browser always
+      # hit/miss together since they share the same key inputs.
+      - name: 📦 Cache Dependencies + Playwright Browser
+        id: cache-deps
         uses: actions/cache@v5
         with:
-          path: node_modules
-          key: ${{ runner.os }}-node-modules-v1-${{ hashFiles('package-lock.json') }}
+          path: |
+            node_modules
+            ~/.cache/ms-playwright
+          key: ${{ runner.os }}-deps-v2-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-node-modules-v1-
+            ${{ runner.os }}-deps-v2-
 
-      - name: 📦 Cache Playwright Binaries
-        id: cache-playwright
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
-
-      - name: Install Dependencies
-        if: steps.cache-node-modules.outputs.cache-hit != 'true'
-        run: npm install playwright pixelmatch pngjs
-
-      - name: Install Playwright Browser
-        if: steps.cache-playwright.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps chromium
+      - name: Install Dependencies + Browser
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          npm install playwright pixelmatch pngjs
+          npx playwright install --with-deps chromium
 
       - name: 🔍 Run Audit Engine
         run: node engine.js
