@@ -13,22 +13,6 @@ if (!fs.existsSync('playwright-report')) {
 }
 
 // ──────────────────────────────────────────────
-// COLOR UTILITIES
-// ──────────────────────────────────────────────
-function parseColor(raw) {
-  if (!raw) return null;
-  const s = String(raw).trim().toLowerCase();
-  if (s.startsWith('#')) return s;
-  const rgbMatch = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-  if (rgbMatch) {
-    const [, r, g, b] = rgbMatch;
-    const toHex = (v) => Number(v).toString(16).padStart(2, '0');
-    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-  }
-  return s;
-}
-
-// ──────────────────────────────────────────────
 // MAIN AUDIT
 // ──────────────────────────────────────────────
 async function runAudit() {
@@ -478,7 +462,6 @@ async function runAudit() {
       }
 
       const results = [];
-      let tokenFailures = 0;
       // === DEDUPLICATION: Track DOM elements already checked ===
       // Multiple Figma tokens can hit the same DOM element — only report each once
       const seenElements = new Map(); // DOM element → index in results
@@ -588,7 +571,6 @@ async function runAudit() {
             const missingKey = `missing_${Math.round(cx / 20)}_${Math.round(cy / 20)}`;
             if (!seenElements.has(missingKey)) {
               seenElements.set(missingKey, results.length);
-              tokenFailures++;
               results.push({
                 type: 'LAYOUT_SHIFT',
                 element: 'Missing Element',
@@ -828,9 +810,7 @@ async function runAudit() {
 
           const layoutErrors = errors.filter(e => e === 'Width' || e === 'Height');
           const styleErrors = errors.filter(e => e !== 'Width' && e !== 'Height');
-          
-          tokenFailures++;
-          
+
           const issueRect = {
             x: Math.round(rect.left + (window.scrollX || 0)),
             y: Math.round(rect.top + (window.scrollY || 0)),
@@ -1368,30 +1348,35 @@ async function runAudit() {
     // Dynamically scale total rules evaluated to accurately reflect the volume of tokens vs volume of errors.
     const totalRulesChecked = Math.max(validTokensCount * 12, totalErrorsFound + Math.max(10, validTokensCount * 2));
     
-    const trueMatchScore = totalRulesChecked > 0
+    // Legacy formula — kept ONLY to drive the <15% fail-fast below, whose threshold
+    // is calibrated to this scale. It inflates badly (denominator = issues x 12 while
+    // each issue carries 1-3 errors, and report dedup hides repeat failures), so it
+    // is no longer displayed.
+    const legacyTokenScore = totalRulesChecked > 0
         ? Math.max(0, Math.round(((totalRulesChecked - totalErrorsFound) / totalRulesChecked) * 100))
         : 100;
 
-    // --- SHADOW TOKEN SCORE (log-only, for calibration) ---
-    // Honest ratio of failed vs actually-performed comparisons, counted before
-    // report dedup. NOT displayed anywhere — compare against trueMatchScore in
-    // the Action logs before deciding to switch the displayed formula.
+    // Displayed score: honest ratio of failed vs actually-performed comparisons,
+    // counted before report dedup (missing elements count as full failures).
+    // Falls back to the legacy formula if the counters are unavailable.
+    let trueMatchScore = legacyTokenScore;
     try {
       if (shadowStats && shadowStats.checked > 0) {
         const _denom = Math.max(shadowStats.checked, 10); // small-sample floor
-        const shadowScore = Math.max(0, Math.round(((_denom - shadowStats.failed) / _denom) * 100));
-        console.log(`🕵️ SHADOW TOKEN SCORE: ${shadowScore}% (displayed: ${trueMatchScore}%) — rules checked: ${shadowStats.checked}, failed: ${shadowStats.failed}, missing elements: ${shadowStats.missing}`);
+        trueMatchScore = Math.max(0, Math.round(((_denom - shadowStats.failed) / _denom) * 100));
+        console.log(`🎯 TOKEN SCORE: ${trueMatchScore}% (legacy formula would show: ${legacyTokenScore}%) — rules checked: ${shadowStats.checked}, failed: ${shadowStats.failed}, missing elements: ${shadowStats.missing}`);
       } else {
-        console.log(`🕵️ SHADOW TOKEN SCORE: unavailable — no comparisons counted (displayed: ${trueMatchScore}%)`);
+        console.log(`🎯 TOKEN SCORE: honest counters unavailable — falling back to legacy formula: ${legacyTokenScore}%`);
       }
-    } catch (shadowErr) {
-      console.log('🕵️ SHADOW TOKEN SCORE: compute failed (non-critical):', shadowErr.message);
+    } catch (scoreErr) {
+      console.log('🎯 TOKEN SCORE: honest compute failed (non-critical), using legacy formula:', scoreErr.message);
     }
 
     // --- MATHEMATICAL MISMATCH FAST-FAIL ---
-    // If < 15% Match Score, the layout structure completely deviates from the Figma Tokens.
-    // Throws a clean mismatch instead of generating a messy 0% PDF.
-    if (trueMatchScore < 15) {
+    // Deliberately still keyed to the LEGACY score: its 15% threshold was calibrated
+    // on that inflated scale. On the honest scale a poorly-implemented-but-correct
+    // page can legitimately score 20-40%, and aborting those audits would be wrong.
+    if (legacyTokenScore < 15) {
       console.log('❌ MATHEMATICAL MISMATCH: Final engine match score is less than 15%. This URL completely deviates from the Figma design.');
       
       // Write error log so the Github Action catches it and updates Supabase to 'failed' reliably
