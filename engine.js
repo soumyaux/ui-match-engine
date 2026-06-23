@@ -3,6 +3,7 @@ const fs = require('fs');
 const { PNG } = require('pngjs');
 const pixelmatchModule = require('pixelmatch');
 const pixelmatch = pixelmatchModule.default || pixelmatchModule;
+const { probePage } = require("./probe.js");
 
 // Single source of truth for issue highlight colors.
 // Used in BOTH screenshot overlay and PDF issue cards so numbers always match colors.
@@ -19,6 +20,17 @@ async function runAudit() {
   let browser;
   try {
     const targetUrl = process.env.TARGET_URL;
+    // Identity + worker origin — used to embed a per-scan feedback link in the PDF.
+    const scanId = process.env.SCAN_ID || '';
+    const workerOrigin = (process.env.WORKER_ORIGIN || 'https://ui-match-proxy.soumyasahoo473.workers.dev').replace(/\/+$/, '');
+    // Corroboration signals for "is this the wrong page?" — collected through the run and
+    // evaluated ONCE at report time. We no longer hard-abort on any single signal; a low
+    // score is itself the report's headline. Only a 2-of-3 agreement raises a warning
+    // banner, and the report is ALWAYS produced. (Genuine "can't audit" cases — page won't
+    // load, login wall, dead URL — still exit, because there is no data to report.)
+    const wrongPageSignals = { gemini: false, tokens: false, visual: false };
+    let visualAlignConfidence = null; // set during visual scoring; 0..1, null = couldn't compute/register
+    let wrongPageBanner = '';        // non-empty → shown atop the report
     let figmaTokens = [];
 
     // Read tokens from local file (downloaded from Supabase Storage)
@@ -51,16 +63,34 @@ async function runAudit() {
     // ══════════════════════════════════════════
     console.log(`🌸 Starting Visual Engine Audit for: ${targetUrl}`);
     browser = await chromium.launch({ headless: true });
+
+    // ── CAPTURED MODE ──
+    // When the UI Match browser extension has already rendered, probed and
+    // screenshotted the live page in the user's own browser (so login- and
+    // VPN-protected pages work), it ships those artifacts as files. We then skip
+    // ALL live-page work — navigation, normalization, auth-wall detection, the DOM
+    // probe and the screenshots — and reuse the captured artifacts. The browser is
+    // still launched, but only to render the final PDF and composite issue markers
+    // onto the captured screenshot.
+    const captured = !!process.env.CAPTURED_REPORT && fs.existsSync(process.env.CAPTURED_REPORT);
+    // Debug hook used by the test suite: when set (live mode only), the engine writes
+    // the exact capture artifacts the extension is expected to produce — this doubles
+    // as the reference definition of the capture contract.
+    const dumpDir = (!captured && process.env.DUMP_CAPTURE) ? process.env.DUMP_CAPTURE : null;
+    if (dumpDir && !fs.existsSync(dumpDir)) fs.mkdirSync(dumpDir, { recursive: true });
+
+    let page = null;
+    let response;
+    let httpStatus = captured ? 200 : 0;
+    if (!captured) {
     // Force 1x device scale to match Figma's 1:1 pixel mapping
     const context = await browser.newContext({ deviceScaleFactor: 1 });
-    const page = await context.newPage();
+    page = await context.newPage();
 
     // Force viewport to match Figma frame width exactly to prevent responsive breaking
     await page.setViewportSize({ width: frameWidth, height: frameHeight });
     console.log(`📐 Viewport set to ${frameWidth}×${frameHeight} @1x (matching Figma frame)`);
 
-    let response;
-    let httpStatus = 0;
     try {
       console.log(`🌍 Navigating to ${targetUrl}...`);
 
@@ -236,18 +266,24 @@ async function runAudit() {
         console.log(`✅ Auth check passed: page has content despite HTTP ${httpStatus}. Continuing audit.`);
       }
     }
+    } // end if (!captured) — live navigation, normalization & auth-wall detection
 
     // ── GEMINI VISION PAGE MATCH CHECK ──
     // Runs BEFORE token validation — catches wrong pages early, saves ~5s on mismatches.
     // Uses a quick viewport screenshot (no blackout, no fullPage) for speed.
     const geminiKey = process.env.GEMINI_API_KEY;
     const figmaImgPath = process.env.FIGMA_IMAGE;
-    if (geminiKey && figmaImgPath && fs.existsSync(figmaImgPath)) {
+    const viewportPath = process.env.LIVE_VIEWPORT;
+    // In captured mode the viewport screenshot is supplied by the extension; skip the
+    // check if it wasn't provided rather than crashing on the missing live page.
+    const canGemini = geminiKey && figmaImgPath && fs.existsSync(figmaImgPath)
+      && (!captured || (viewportPath && fs.existsSync(viewportPath)));
+    if (canGemini) {
       try {
         console.log('🤖 Running Gemini Vision page match check...');
 
         // Quick viewport-only screenshot (no blackout applied yet — real page)
-        const geminiLiveBuffer = await page.screenshot({ fullPage: false });
+        const geminiLiveBuffer = captured ? fs.readFileSync(viewportPath) : await page.screenshot({ fullPage: false });
 
         // Crop Figma PNG to viewport height using bulk TypedArray copy (faster than pixel loop)
         const figmaFull = PNG.sync.read(fs.readFileSync(figmaImgPath));
@@ -286,10 +322,10 @@ async function runAudit() {
           console.log(`🤖 Gemini page match: ${answer}`);
 
           if (answer.startsWith('NO')) {
-            console.error('❌ Gemini Vision: This page does not match the Figma design.');
-            fs.writeFileSync('playwright-report/error-log.txt',
-              'Wrong Page: This page does not visually match your Figma design. Please check that the URL matches your selected frame.');
-            process.exit(1);
+            // Gemini's vote that this may be the wrong page. Recorded, not fatal — the
+            // corroborated decision (>=2 of 3 signals) is made at report time.
+            wrongPageSignals.gemini = true;
+            console.log('⚠️ Gemini signal: page may not match the Figma design.');
           }
         } else {
           console.warn(`⚠️ Gemini API returned ${geminiRes.status} — skipping check.`);
@@ -303,592 +339,51 @@ async function runAudit() {
     // PHASE 1: TOKEN CSS VALIDATION
     // ══════════════════════════════════════════
     console.log('🔍 Running CSS Token Validation...');
-    
+
     // Evaluate CSS properties by POSITION-BASED matching
     // Instead of querySelector (Figma names never match DOM), we use elementFromPoint
     // at the Figma token's (x, y) coordinates to find the real live DOM element.
-    const tokenReport = await page.evaluate((tokens) => {
-      function parseColorBrowser(raw) {
-        if (!raw) return null;
-        const s = String(raw).trim().toLowerCase();
-        const h2 = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
-        // Expand 3-digit hex shorthand (#fff → #ffffff)
-        if (s.startsWith('#')) {
-          if (s.length === 4) return '#' + s[1]+s[1]+s[2]+s[2]+s[3]+s[3];
-          return s;
-        }
-        // rgb/rgba — comma or space separated
-        const rm = s.match(/rgba?\(\s*([\d.]+)\s*[, ]\s*([\d.]+)\s*[, ]\s*([\d.]+)/);
-        if (rm) return `#${h2(rm[1])}${h2(rm[2])}${h2(rm[3])}`;
-        // hsl/hsla — comma or space separated
-        const hm = s.match(/hsla?\(\s*([\d.]+)\s*[, ]\s*([\d.]+)%\s*[, ]\s*([\d.]+)%/);
-        if (hm) {
-          const h = parseFloat(hm[1]) / 360, sl = parseFloat(hm[2]) / 100, l = parseFloat(hm[3]) / 100;
-          const q = l < 0.5 ? l * (1 + sl) : l + sl - l * sl, p = 2 * l - q;
-          const hue = (t) => { t = ((t%1)+1)%1; return t<1/6 ? p+(q-p)*6*t : t<0.5 ? q : t<2/3 ? p+(q-p)*(2/3-t)*6 : p; };
-          return `#${h2(hue(h+1/3)*255)}${h2(hue(h)*255)}${h2(hue(h-1/3)*255)}`;
-        }
-        // oklch(L C H) — convert via OKLAB → linear sRGB → sRGB
-        const om = s.match(/oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)/);
-        if (om) {
-          const L = parseFloat(om[1]), C = parseFloat(om[2]), H = parseFloat(om[3]) * Math.PI / 180;
-          const a = C * Math.cos(H), b2 = C * Math.sin(H);
-          const l_ = (L+0.3963377774*a+0.2158037573*b2)**3, m_ = (L-0.1055613458*a-0.0638541728*b2)**3, s_ = (L-0.0894841775*a-1.2914855480*b2)**3;
-          const lin = (c) => c > 0.0031308 ? 1.055*c**(1/2.4)-0.055 : 12.92*c;
-          return `#${h2(lin(4.0767416621*l_-3.3077115913*m_+0.2309699292*s_)*255)}${h2(lin(-1.2684380046*l_+2.6097574011*m_-0.3413193965*s_)*255)}${h2(lin(-0.0041960863*l_-0.7034186147*m_+1.7076147010*s_)*255)}`;
-        }
-        // hwb(H W% B%)
-        const wm = s.match(/hwb\(\s*([\d.]+)\s+([\d.]+)%\s+([\d.]+)%/);
-        if (wm) {
-          const H = parseFloat(wm[1])/360, W = parseFloat(wm[2])/100, B = parseFloat(wm[3])/100;
-          if (W+B >= 1) { const g = Math.round(W/(W+B)*255); return `#${h2(g)}${h2(g)}${h2(g)}`; }
-          const hue = (t) => { t = ((t%1)+1)%1; return t<1/6 ? 6*t : t<0.5 ? 1 : t<2/3 ? (2/3-t)*6 : 0; };
-          const f = 1-W-B;
-          return `#${h2((hue(H+1/3)*f+W)*255)}${h2((hue(H)*f+W)*255)}${h2((hue(H-1/3)*f+W)*255)}`;
-        }
-        return null;
-      }
-      function colorsMatchBrowser(figmaHex, liveRaw) {
-        const a = parseColorBrowser(figmaHex);
-        const b = parseColorBrowser(liveRaw);
-        if (!a || !b) return true;
-        if (a === b) return true;
-        // RGB tolerance: allow ±5 per channel to avoid sub-pixel rendering false flags
-        const hexToRgb = (hex) => {
-          const h = hex.replace('#', '');
-          return [parseInt(h.substring(0,2),16), parseInt(h.substring(2,4),16), parseInt(h.substring(4,6),16)];
-        };
-        if (a.startsWith('#') && a.length === 7 && b.startsWith('#') && b.length === 7) {
-          const [r1,g1,b1] = hexToRgb(a);
-          const [r2,g2,b2] = hexToRgb(b);
-          return Math.abs(r1-r2) <= 5 && Math.abs(g1-g2) <= 5 && Math.abs(b1-b2) <= 5;
-        }
-        return false;
-      }
-      // Walk UP to the nearest top-level/semantic parent component
-      function getElementName(el) {
-        if (!el) return 'Unknown';
-        // Walk up to find the nearest meaningful parent
-        let current = el;
-        const semanticTags = ['NAV','HEADER','FOOTER','MAIN','ASIDE','SECTION','FORM','TABLE','DIALOG'];
-        while (current && current !== document.body && current !== document.documentElement) {
-          const tag = current.tagName;
-          // Semantic HTML elements
-          if (semanticTags.includes(tag)) {
-            const names = { 'NAV': 'Navigation', 'HEADER': 'Header', 'FOOTER': 'Footer', 'MAIN': 'Main Content', 'ASIDE': 'Sidebar', 'SECTION': 'Section', 'FORM': 'Form', 'TABLE': 'Table', 'DIALOG': 'Dialog' };
-            return names[tag] || tag.toLowerCase();
-          }
-          // Elements with aria-labels or meaningful roles
-          if (current.getAttribute('role')) {
-            const role = current.getAttribute('role');
-            const roleNames = { 'navigation': 'Navigation', 'banner': 'Header', 'main': 'Main Content', 'contentinfo': 'Footer', 'complementary': 'Sidebar', 'dialog': 'Dialog', 'tablist': 'Tab Bar', 'toolbar': 'Toolbar', 'search': 'Search' };
-            if (roleNames[role]) return roleNames[role];
-          }
-          // Specific interactive elements
-          if (tag === 'BUTTON' || current.getAttribute('role') === 'button') return current.textContent?.trim().substring(0, 25) || 'Button';
-          if (tag === 'A') return 'Link: ' + (current.textContent?.trim().substring(0, 20) || 'Link');
-          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return current.placeholder || current.name || 'Input';
-          if (tag === 'IMG') return current.alt || 'Image';
-          if (tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'H4') return 'Heading: ' + (current.textContent?.trim().substring(0, 20) || '');
-          current = current.parentElement;
-        }
-        // Fallback: use the original element's info
-        if (el.id) return el.tagName.toLowerCase() + '#' + el.id;
-        const text = el.textContent?.trim().substring(0, 20);
-        if (text && text.length > 2) return text;
-        return 'Component';
-      }
-
-      // Cache all stylesheet rules once — avoids repeated DOM walk per token
-      const _cachedSheetRules = [];
-      for (const sheet of document.styleSheets) {
-        try { _cachedSheetRules.push(...Array.from(sheet.cssRules || [])); } catch(e) {}
-      }
-      const _inheritableProps = new Set(['color','font-size','font-family','font-weight','letter-spacing','line-height','text-align','text-decoration','text-transform','opacity']);
-      // Lazy per-property rule index: only rules whose value for that property is a
-      // var(). Rules without one could never make the check pass, so scanning this
-      // short list is behavior-identical to walking ALL rules (with an expensive
-      // node.matches per rule) for every token.
-      const _varRulesByProp = new Map();
-      function _getVarRules(cssProperty) {
-        let rules = _varRulesByProp.get(cssProperty);
-        if (!rules) {
-          rules = [];
-          for (const rule of _cachedSheetRules) {
-            try {
-              if (rule.selectorText && rule.style) {
-                const val = rule.style.getPropertyValue(cssProperty);
-                if (val && val.trim().startsWith('var(')) rules.push(rule);
-              }
-            } catch(e) {}
-          }
-          _varRulesByProp.set(cssProperty, rules);
-        }
-        return rules;
-      }
-      // Memo per (element, property) — ancestor walks re-checked the same page
-      // wrappers for nearly every token. Styles are static at this point.
-      const _varCheckMemo = new WeakMap();
-      function hasCSSVarForProperty(el, cssProperty, checkAncestors) {
-        const _check = (node) => {
-          let memo = _varCheckMemo.get(node);
-          if (memo && memo.has(cssProperty)) return memo.get(cssProperty);
-          let found = false;
-          try {
-            const inlineVal = node.style.getPropertyValue(cssProperty);
-            if (inlineVal && inlineVal.trim().startsWith('var(')) {
-              found = true;
-            } else {
-              for (const rule of _getVarRules(cssProperty)) {
-                try {
-                  if (node.matches(rule.selectorText)) { found = true; break; }
-                } catch(e) {}
-              }
-            }
-          } catch(e) {}
-          if (!memo) { memo = new Map(); _varCheckMemo.set(node, memo); }
-          memo.set(cssProperty, found);
-          return found;
-        };
-        if (_check(el)) return true;
-        if (checkAncestors !== false && _inheritableProps.has(cssProperty)) {
-          let parent = el.parentElement;
-          while (parent && parent !== document.body) {
-            if (_check(parent)) return true;
-            parent = parent.parentElement;
-          }
-        }
-        return false;
-      }
-
-      const results = [];
-      // === DEDUPLICATION: Track DOM elements already checked ===
-      // Multiple Figma tokens can hit the same DOM element — only report each once
-      const seenElements = new Map(); // DOM element → index in results
-      const checkedPositions = new Set();
-
-      // === SHADOW SCORING (log-only — never displayed, never affects results) ===
-      // Counts every comparison actually performed, BEFORE report dedup/filtering,
-      // so the Action log can show an honest pass/fail ratio next to the displayed
-      // score. Fully guarded: any error here is swallowed and the audit continues.
-      const _shadow = { checked: 0, failed: 0, missing: 0 };
-      function _shadowRuleCount(design, role, isTangible) {
-        let n = 0;
-        try {
-          if (role === 'text' || design.fs) {
-            if (design.fs && design.fs !== 'Mixed') n++;
-            if (design.ff && design.ff !== 'Mixed') n++;
-            if (design.fw && design.fw !== 'Mixed') n++;
-            if (design.color && design.color !== 'Mixed') n++;
-            if (design.ls !== undefined && design.ls !== 'Mixed') n++;
-            if (design.lh !== undefined && design.lh !== 'Mixed') n++;
-            if (design.ta && design.ta !== 'Mixed' && String(design.ta).toLowerCase() !== 'left') n++;
-            if (design.td && design.td !== 'Mixed') n++;
-            if (design.tt && design.tt !== 'Mixed') n++;
-          }
-          if (role !== 'text') {
-            if (design.bg && design.bg.length > 0) n++;
-            if (design.br !== undefined && design.br !== 'Mixed' && design.br > 0) n++;
-            if (design.op !== undefined && design.op < 1) n++;
-            if (design.bw !== undefined && design.bw > 0) n++;
-            if (design.bc) n++;
-          }
-          if (role === 'container' || design.pad || design.gap !== undefined) {
-            if (design.pad && Array.isArray(design.pad)) design.pad.forEach(p => { if (p > 0) n++; });
-            if (design.gap !== undefined) n++;
-          }
-          if (role === 'leaf' && isTangible) {
-            if (design.w !== undefined && design.w > 0) n++;
-            if (design.h !== undefined && design.h > 0) n++;
-          }
-        } catch (e) {}
-        return n;
-      }
-
-      tokens.forEach((design) => {
-        const name = design.name || 'unknown';
-        // Skip tiny spacer/divider tokens that aren't meaningful UI components
-        if ((design.w || 0) < 20 && (design.h || 0) < 20) return;
-
-        // Skip image/decorative Figma tokens from Missing Element detection
-        // Only skip if the layer name indicates a decorative element, OR if it is a pure geometry type.
-        // RECTANGLEs and ELLIPSEs that represent real UI components (buttons, cards) are kept.
-        const lowerName = name.toLowerCase();
-        const hasDecorativeName = lowerName.includes('image') || lowerName.includes('img') ||
-            lowerName.includes('photo') || lowerName.includes('icon') ||
-            lowerName.includes('illustration') || lowerName.includes('logo') ||
-            lowerName.includes('vector') || lowerName.includes('bitmap') ||
-            lowerName.includes('mask') || lowerName.includes('clip') ||
-            lowerName.includes('divider') || lowerName.includes('separator') ||
-            lowerName === 'bg' || lowerName.endsWith(' bg') || lowerName.startsWith('bg ') ||
-            lowerName.includes('background') || lowerName.includes('decor');
-        const isPureShape = design.type === 'VECTOR' || design.type === 'BOOLEAN_OPERATION' ||
-            design.type === 'STAR' || design.type === 'LINE' || design.type === 'POLYGON';
-        // RECTANGLE/ELLIPSE only treated as decorative when ALSO named as decorative
-        const isImageOrDecor = hasDecorativeName || isPureShape ||
-            ((design.type === 'RECTANGLE' || design.type === 'ELLIPSE') && hasDecorativeName);
-        
-        const cx = (design.x || 0) + (design.w || 0) / 2;
-        const cy = (design.y || 0) + (design.h || 0) / 2;
-        
-        if (cx <= 0 && cy <= 0) return;
-        // Wider dedup radius (10px) to avoid checking overlapping tokens
-        const posKey = Math.round(cx / 10) + ',' + Math.round(cy / 10);
-        if (checkedPositions.has(posKey)) return;
-        checkedPositions.add(posKey);
-        
-        // Multi-point probing: check center + 4 inner corners to avoid false negatives
-        // from responsive shifts where the center pixel misses the element
-        const probePoints = [
-          [cx, cy],
-          [(design.x || 0) + (design.w || 0) * 0.25, (design.y || 0) + (design.h || 0) * 0.25],
-          [(design.x || 0) + (design.w || 0) * 0.75, (design.y || 0) + (design.h || 0) * 0.25],
-          [(design.x || 0) + (design.w || 0) * 0.25, (design.y || 0) + (design.h || 0) * 0.75],
-          [(design.x || 0) + (design.w || 0) * 0.75, (design.y || 0) + (design.h || 0) * 0.75],
-        ];
-        let el = null;
-        for (const [px, py] of probePoints) {
-          const probe = document.elementFromPoint(px, py);
-          if (probe && probe !== document.body && probe !== document.documentElement) {
-            el = probe; break;
-          }
-        }
-        
-        // === MISSING ELEMENT: Figma has content here but live page has nothing ===
-        if (!el || el === document.body || el === document.documentElement) {
-          // Skip image/decorative tokens — they cause false positives
-          if (isImageOrDecor) return;
-          // Only report if the Figma token is large enough to be a real component (not a spacer)
-          if ((design.w || 0) > 50 && (design.h || 0) > 50) {
-            // Shadow scoring: a missing element means every check it would have had
-            // failed (floor of 4) — counted before report dedup hides duplicates
-            try {
-              const _n = Math.max(_shadowRuleCount(design, design.role || 'leaf', false), 4);
-              _shadow.checked += _n;
-              _shadow.failed += _n;
-              _shadow.missing++;
-            } catch (e) {}
-            const missingKey = `missing_${Math.round(cx / 20)}_${Math.round(cy / 20)}`;
-            if (!seenElements.has(missingKey)) {
-              seenElements.set(missingKey, results.length);
-              results.push({
-                type: 'LAYOUT_SHIFT',
-                element: 'Missing Element',
-                details: [`Element in Figma ("${name}") not found on live page at position (${Math.round(cx)}, ${Math.round(cy)}). Size: ${design.w}×${design.h}px`],
-                rect: { x: Math.round(design.x || 0), y: Math.round(design.y || 0), w: Math.round(design.w || 50), h: Math.round(design.h || 50) }
-              });
-            }
-          }
-          return;
-        }
-        
-        // === SKIP IRRELEVANT ELEMENTS ===
-        // Skip media/image/chart elements — these are dynamic content that always differs from Figma
-        const tag = el.tagName.toUpperCase();
-        if (tag === 'IMG' || tag === 'PICTURE' || tag === 'CANVAS' || tag === 'IFRAME' || tag === 'VIDEO' || tag === 'AUDIO') return;
-        if (tag === 'SVG' || el.closest?.('svg')) return;
-        if (el.closest?.('canvas') || el.closest?.('iframe') || el.closest?.('picture')) return;
-        // Skip elements with background-image (hero banners, card thumbnails, etc.)
-        const computedBg = window.getComputedStyle(el).backgroundImage;
-        if (computedBg && computedBg !== 'none' && computedBg.includes('url(')) return;
-        // Skip elements inside image/media containers
-        if (el.closest?.('figure') || el.closest?.('[class*="image"]') || el.closest?.('[class*="Image"]')) return;
-        // Skip elements inside chart containers (common libraries)
-        if (el.closest?.('[class*="chart"]') || el.closest?.('[class*="graph"]') || el.closest?.('[class*="recharts"]') || el.closest?.('[class*="highcharts"]') || el.closest?.('[class*="apexcharts"]')) return;
-
-        // Skip generic full-page wrapper divs that are just layout containers
-        // These are wrappers like div.size-full, div#root, div#app, div#__next
-        // They cover the entire viewport and have no meaningful design properties
-        const rect = el.getBoundingClientRect();
-        if (tag === 'DIV') {
-          const cls = (el.className || '').toString().toLowerCase();
-          const elId = (el.id || '').toLowerCase();
-          const isFullPageWrapper = (rect.width >= window.innerWidth * 0.95 && rect.height >= window.innerHeight * 0.9);
-          const isKnownWrapper = cls.includes('size-full') || cls.includes('app') || cls.includes('root') || cls.includes('wrapper') || cls.includes('container') || cls.includes('layout') || elId === 'root' || elId === 'app' || elId === '__next' || elId === '__nuxt';
-          if (isFullPageWrapper || isKnownWrapper) return;
-        }
-
-        const live = window.getComputedStyle(el);
-        // Skip off-screen or invisible elements
-        if (rect.width < 5 || rect.height < 5) return;
-        // Skip hidden elements (display:none, visibility:hidden, opacity:0)
-        if (live.display === 'none' || live.visibility === 'hidden' || live.opacity === '0') return;
-        // Skip elements positioned way outside the viewport (off-screen tricks)
-        if (rect.right < 0 || rect.bottom < 0) return;
-        // Use Figma layer name for issue titles — much more useful for designers
-        // Clean it: take last segment of path (e.g., "Frame / Section / Button" → "Button")
-        const _segments = (name && name !== 'unknown') ? name.split('/').map(s => s.trim()).filter(Boolean) : [];
-        const figmaName = _segments.length >= 2
-            ? _segments.slice(-2).join(' / ')
-            : (_segments.length === 1 ? _segments[0] : null);
-        const elName = figmaName || getElementName(el);
-        const errors = [];
-        const role = design.role || 'leaf'; // text | container | leaf
-        
-        // Determine if this DOM element is a tangible interactive component
-        const tangibleTags = ['BUTTON', 'A', 'INPUT', 'TEXTAREA', 'SELECT', 'IMG', 'LABEL'];
-        const isTangible = tangibleTags.includes(tag) || el.getAttribute('role') === 'button';
-
-        // ═══════════════════════════════════════
-        // TEXT PROPERTIES (only for text tokens)
-        // ═══════════════════════════════════════
-        if (role === 'text' || design.fs) {
-          if (design.fs && design.fs !== 'Mixed') {
-            const liveSize = parseFloat(live.fontSize);
-            const diff = Math.round(liveSize - design.fs);
-            if (Math.abs(diff) > 2) errors.push('Font Size');
-          }
-          if (design.ff && design.ff !== 'Mixed' && live.fontFamily) {
-            const _figmaFF = design.ff.toLowerCase();
-            const _liveFF = live.fontFamily.toLowerCase();
-            const _strip = (s) => s.replace(/\b(variable|display|text|pro|neue)\b/g, '').replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
-            const _figmaN = _strip(_figmaFF);
-            const _firstLive = _strip(_liveFF.split(',')[0].replace(/["']/g, '').trim());
-            // 1. Direct substring check
-            if (_liveFF.includes(_figmaN) || _firstLive.includes(_figmaN) || _figmaN.includes(_firstLive)) { /* match */ }
-            // 2. System font aliases
-            else if (/^(sf|san francisco|segoe)/.test(_figmaN) && /(-apple-system|system-ui|blinkmacsystemfont|segoe)/.test(_liveFF)) { /* match */ }
-            // 3. First-word match (e.g. "Geist Sans" vs "Geist" → both start with "geist")
-            else if (_figmaN.split(' ')[0].length >= 3 && _firstLive.includes(_figmaN.split(' ')[0])) { /* match */ }
-            // 4. Font actually loaded on page (framework-renamed like __Inter_abc123)
-            else if ([...document.fonts].some(f => { const fn = _strip(f.family.toLowerCase().replace(/["']/g, '')); return fn.includes(_figmaN) || _figmaN.includes(fn) || (fn.length >= 3 && _figmaN.includes(fn.split(' ')[0])); })) { /* match */ }
-            else {
-              errors.push('Font Family');
-            }
-          }
-          if (design.fw && design.fw !== 'Mixed') {
-            const weightMap = {
-              'Thin': '100', 'Hairline': '100',
-              'ExtraLight': '200', 'Extra Light': '200', 'UltraLight': '200', 'Ultra Light': '200',
-              'Light': '300',
-              'Regular': '400', 'Normal': '400', 'Book': '400',
-              'Medium': '500',
-              'SemiBold': '600', 'Semi Bold': '600', 'DemiBold': '600', 'Demi Bold': '600',
-              'Bold': '700',
-              'ExtraBold': '800', 'Extra Bold': '800', 'UltraBold': '800', 'Ultra Bold': '800',
-              'Black': '900', 'Heavy': '900'
-            };
-            const expectedWeight = weightMap[design.fw] || design.fw;
-            if (live.fontWeight !== expectedWeight && live.fontWeight !== String(expectedWeight)) {
-              errors.push('Font Weight');
-            }
-          }
-          if (design.color && design.color !== 'Mixed') {
-            if (!colorsMatchBrowser(design.color, live.color)) {
-              errors.push('Text Color');
-            }
-          }
-          if (design.ls !== undefined && design.ls !== 'Mixed') {
-            const liveLs = live.letterSpacing === 'normal' ? 0 : parseFloat(live.letterSpacing) || 0;
-            const expectedLs = typeof design.ls === 'number' ? design.ls : 0;
-            if (Math.abs(liveLs - expectedLs) > 2) errors.push('Letter Spacing');
-          }
-          if (design.lh !== undefined && design.lh !== 'Mixed') {
-            const liveLh = live.lineHeight === 'normal' ? 0 : parseFloat(live.lineHeight) || 0;
-            const expectedLh = typeof design.lh === 'number' ? design.lh : 0;
-            if (expectedLh > 0 && liveLh > 0 && Math.abs(liveLh - expectedLh) > 2) {
-              errors.push('Line Height');
-            }
-          }
-          if (design.ta && design.ta !== 'Mixed' && design.ta.toLowerCase() !== 'left') {
-            const ta = design.ta.toLowerCase();
-            const expected = ta === 'justified' ? 'justify' : ta;
-            const liveTA = live.textAlign === 'start' ? 'left' : live.textAlign === 'end' ? 'right' : live.textAlign;
-            if (liveTA !== expected) errors.push('Text Align');
-          }
-          if (design.td && design.td !== 'Mixed') {
-            const expected = design.td === 'strikethrough' ? 'line-through' : design.td;
-            if (!live.textDecoration.includes(expected)) errors.push('Text Decoration');
-          }
-          if (design.tt && design.tt !== 'Mixed') {
-            if (live.textTransform !== design.tt) errors.push('Text Transform');
-          }
-        }
-
-        // ═══════════════════════════════════════
-        // VISUAL PROPERTIES (containers + leaves)
-        // ═══════════════════════════════════════
-        if (role !== 'text') {
-          if (design.bg && design.bg.length > 0) {
-            const liveBg = parseColorBrowser(live.backgroundColor);
-            if (liveBg && liveBg !== 'transparent' && liveBg !== 'rgba(0, 0, 0, 0)' && !colorsMatchBrowser(design.bg[0], live.backgroundColor)) {
-              errors.push('Background Color');
-            }
-          }
-          if (design.br !== undefined && design.br !== 'Mixed' && design.br > 0) {
-            const liveRadius = parseFloat(live.borderRadius) || 0;
-            const diff = Math.round(liveRadius - design.br);
-            if (Math.abs(diff) > 2) errors.push('Border Radius');
-          }
-          if (design.op !== undefined && design.op < 1) {
-            const liveOp = parseFloat(live.opacity);
-            if (Math.abs(liveOp - design.op) > 0.05) errors.push('Opacity');
-          }
-          if (design.bw !== undefined && design.bw > 0) {
-            const liveBw = parseFloat(live.borderWidth) || 0;
-            if (Math.abs(liveBw - design.bw) > 2) errors.push('Border Width');
-          }
-          if (design.bc) {
-            if (!colorsMatchBrowser(design.bc, live.borderColor)) {
-              errors.push('Border Color');
-            }
-          }
-        }
-
-        // ═══════════════════════════════════════
-        // SPACING PROPERTIES (containers only)
-        // ═══════════════════════════════════════
-        if (role === 'container' || design.pad || design.gap !== undefined) {
-          if (design.pad && Array.isArray(design.pad)) {
-            const [pt, pr, pb, pl] = design.pad;
-            const sides = [
-              { name: 'Top', figma: pt, live: parseFloat(live.paddingTop) || 0 },
-              { name: 'Right', figma: pr, live: parseFloat(live.paddingRight) || 0 },
-              { name: 'Bottom', figma: pb, live: parseFloat(live.paddingBottom) || 0 },
-              { name: 'Left', figma: pl, live: parseFloat(live.paddingLeft) || 0 },
-            ];
-            sides.forEach(s => {
-              if (s.figma > 0) {
-                const diff = Math.round(s.live - s.figma);
-                if (Math.abs(diff) > 2) errors.push('Padding ' + s.name);
-              }
-            });
-          }
-          if (design.gap !== undefined) {
-            const liveGap = live.gap === 'normal' ? 0 : parseFloat(live.gap) || 0;
-            const diff = Math.round(liveGap - design.gap);
-            if (Math.abs(diff) > 2) errors.push('Gap');
-          }
-        }
-
-        // ═══════════════════════════════════════
-        // DIMENSION PROPERTIES (tangible leaves ONLY)
-        // ═══════════════════════════════════════
-        if (role === 'leaf' && isTangible) {
-          if (design.w !== undefined && design.w > 0) {
-            const diffW = Math.round(rect.width - design.w);
-            if (Math.abs(diffW) > 2) errors.push('Width');
-          }
-          if (design.h !== undefined && design.h > 0) {
-            const diffH = Math.round(rect.height - design.h);
-            if (Math.abs(diffH) > 2) errors.push('Height');
-          }
-        }
-
-        // Reclassify style errors where live uses CSS var → token sync issue (yellow pill)
-        const _p2c = {'Text Color':'color','Background Color':'background-color','Font Size':'font-size','Font Family':'font-family','Font Weight':'font-weight','Border Radius':'border-radius','Border Color':'border-color','Border Width':'border-width','Opacity':'opacity'};
-        for (let _i = 0; _i < errors.length; _i++) {
-          const _css = _p2c[errors[_i]];
-          if (_css && hasCSSVarForProperty(el, _css)) errors[_i] = '~' + errors[_i];
-        }
-
-        // Shadow scoring: tally this element's comparisons before report dedup.
-        // '~' entries are CSS-var sync warnings, not failures (parity with the
-        // displayed score, which also excludes TOKEN_UNCONNECTED issues).
-        try {
-          const _failedHere = errors.filter(e => !e.startsWith('~')).length;
-          _shadow.checked += Math.max(_shadowRuleCount(design, role, isTangible), _failedHere);
-          _shadow.failed += _failedHere;
-        } catch (e) {}
-
-        if (errors.length > 0) {
-          // === DEDUP: check if this DOM element was already reported ===
-          // Use a unique key based on element tag + position to detect same element
-          const elKey = `${tag}_${Math.round(rect.left)}_${Math.round(rect.top)}_${Math.round(rect.width)}`;
-          if (seenElements.has(elKey)) {
-            // Merge errors into existing issue
-            const existingIdx = seenElements.get(elKey);
-            const existing = results[existingIdx];
-            if (existing) {
-              // Add new errors that aren't already listed
-              errors.forEach(e => {
-                if (!existing.details.includes(e)) existing.details.push(e);
-              });
-            }
-            return; // Don't create a new issue
-          }
-
-          const layoutErrors = errors.filter(e => e === 'Width' || e === 'Height');
-          const styleErrors = errors.filter(e => e !== 'Width' && e !== 'Height');
-
-          const issueRect = {
-            x: Math.round(rect.left + (window.scrollX || 0)),
-            y: Math.round(rect.top + (window.scrollY || 0)),
-            w: Math.round(rect.width || design.w || 50),
-            h: Math.round(rect.height || design.h || 50)
-          };
-
-          // Skip container-level matches
-          if (issueRect.w > window.innerWidth * 0.4 && issueRect.h > 300) return;
-
-          if (layoutErrors.length > 0) {
-            const idx = results.length;
-            seenElements.set(elKey, idx);
-            results.push({
-              type: 'LAYOUT_SHIFT',
-              element: elName,
-              details: layoutErrors,
-              rect: issueRect
-            });
-          }
-          if (styleErrors.length > 0) {
-            const idx = results.length;
-            if (!seenElements.has(elKey)) seenElements.set(elKey, idx);
-            results.push({
-              type: styleErrors.some(e => !e.startsWith('~')) ? 'MINOR_DIFF' : 'TOKEN_UNCONNECTED',
-              element: elName,
-              details: styleErrors,
-              rect: issueRect
-            });
-          }
-        } else {
-          // Values match — check if CSS design token variables are actually being used
-          const cssPropsToCheck = [];
-          if (design.color && (role === 'text' || design.fs))
-            cssPropsToCheck.push({ css: 'color', label: 'Text Color' });
-          if (design.bg?.[0] && role !== 'text')
-            cssPropsToCheck.push({ css: 'background-color', label: 'Background' });
-          if (design.fs && design.fs !== 'Mixed')
-            cssPropsToCheck.push({ css: 'font-size', label: 'Font Size' });
-          if (design.ff && design.ff !== 'Mixed')
-            cssPropsToCheck.push({ css: 'font-family', label: 'Font Family' });
-
-          const noneUseVars = cssPropsToCheck.length > 0
-            && cssPropsToCheck.every(p => !hasCSSVarForProperty(el, p.css, false));
-
-          if (noneUseVars) {
-            const ucRect = {
-              x: Math.round(rect.left + (window.scrollX || 0)),
-              y: Math.round(rect.top + (window.scrollY || 0)),
-              w: Math.round(rect.width || design.w || 50),
-              h: Math.round(rect.height || design.h || 50)
-            };
-            if (ucRect.w > window.innerWidth * 0.4 && ucRect.h > 300) {
-              results.push({ type: 'TOKEN_PASS', element: elName });
-            } else {
-              results.push({
-                type: 'TOKEN_UNCONNECTED',
-                element: elName,
-                details: cssPropsToCheck.map(p => p.label),
-                rect: ucRect
-              });
-            }
-          } else {
-            results.push({ type: 'TOKEN_PASS', element: elName });
-          }
-        }
-      });
-      try { window.__shadowScore = _shadow; } catch (e) {}
-      return results;
-    }, designTokens);
+    let tokenReport;
+    if (captured) {
+      // The extension ran this exact probe against the live (logged-in / on-VPN) page.
+      tokenReport = JSON.parse(fs.readFileSync(process.env.CAPTURED_REPORT, 'utf8'));
+      console.log(`📦 Captured mode: loaded ${tokenReport.length} probe results from extension capture.`);
+    } else {
+    tokenReport = await page.evaluate(probePage, designTokens);
+    }
 
     // Shadow scoring stats (log-only). Failure here must never affect the audit.
-    const shadowStats = await page.evaluate(() => window.__shadowScore || null).catch(() => null);
+    const shadowStats = captured
+      ? ((process.env.CAPTURED_SHADOW && fs.existsSync(process.env.CAPTURED_SHADOW))
+          ? JSON.parse(fs.readFileSync(process.env.CAPTURED_SHADOW, 'utf8')) : null)
+      : await page.evaluate(() => window.__shadowScore || null).catch(() => null);
+
+    // Capture-artifact dump (live mode only) — reference for what the extension produces.
+    if (dumpDir) {
+      try {
+        fs.writeFileSync(`${dumpDir}/report.json`, JSON.stringify(tokenReport));
+        if (shadowStats) fs.writeFileSync(`${dumpDir}/shadow.json`, JSON.stringify(shadowStats));
+      } catch (e) { console.warn('⚠️ dump (report/shadow) failed:', e.message); }
+    }
 
     // ══════════════════════════════════════════
     // PHASE 2: VISUAL PIXEL MATCH & CLUSTERING
     // ══════════════════════════════════════════
     console.log('📸 Taking live screenshot...');
+
+    let liveScreenshotBuffer;
+    if (captured) {
+      // Blacked-out full-page screenshot the extension captured (for pixelmatch).
+      liveScreenshotBuffer = fs.readFileSync(process.env.LIVE_SCREENSHOT);
+    } else {
+    // Dump the clean (real-image) full-page + viewport screenshots BEFORE blackout —
+    // the extension provides these; the clean full-page is the backdrop for issue markers.
+    if (dumpDir) {
+      try {
+        fs.writeFileSync(`${dumpDir}/live-clean.png`, await page.screenshot({ fullPage: true }));
+        fs.writeFileSync(`${dumpDir}/live-viewport.png`, await page.screenshot({ fullPage: false }));
+      } catch (e) { console.warn('⚠️ dump (clean/viewport) failed:', e.message); }
+    }
 
     // Apply image blackout for pixelmatch comparison (prevents false mismatches from image content)
     await page.addStyleTag({ content: `
@@ -900,7 +395,12 @@ async function runAudit() {
     `});
     await page.waitForTimeout(50);
 
-    const liveScreenshotBuffer = await page.screenshot({ fullPage: true });
+    liveScreenshotBuffer = await page.screenshot({ fullPage: true });
+    if (dumpDir) {
+      try { fs.writeFileSync(`${dumpDir}/live-blackout.png`, liveScreenshotBuffer); }
+      catch (e) { console.warn('⚠️ dump (blackout) failed:', e.message); }
+    }
+    }
 
     let visualIssues = [];
     let pixelMatchPercent = 100; // default if no Figma image
@@ -927,11 +427,72 @@ async function runAudit() {
         const cropLive = new Uint8Array(width * height * 4);
         const rawDiff = new PNG({ width, height });
 
-        // Row-based TypedArray copy — ~10x faster than pixel-by-pixel loop
+        // --- VERTICAL ALIGNMENT (pre-pass) ---
+        // A cookie bar / announcement strip / taller real hero shifts the whole live page
+        // down. Naive pixel(x,y)->pixel(x,y) comparison then sees almost every row as
+        // different — a structurally-correct page scores ~16%. We first register the two
+        // images by finding the vertical shift whose per-row "ink profile" (fraction of
+        // non-background pixels) best matches, then compare the aligned crop. The sharpness
+        // of that match also gives an alignment CONFIDENCE used later as a wrong-page signal.
+        const inkProfile = (img, compareW, hLimit) => {
+          const prof = new Float32Array(hLimit);
+          for (let y = 0; y < hLimit; y++) {
+            let dark = 0, n = 0;
+            for (let x = 0; x < compareW; x += 4) {
+              const i = (img.width * y + x) << 2; n++;
+              if (img.data[i] + img.data[i + 1] + img.data[i + 2] < 600) dark++;
+            }
+            prof[y] = n ? dark / n : 0;
+          }
+          return prof;
+        };
+        let alignShift = 0;
+        const maxShift = Math.min(240, Math.floor(height * 0.2));
+        try {
+          const pf = inkProfile(imgFigma, width, height);
+          const pl = inkProfile(imgLive, width, Math.min(imgLive.height, height + maxShift));
+          let bestErr = Infinity; const errs = [];
+          for (let sh = -maxShift; sh <= maxShift; sh += 2) {
+            let e = 0, n = 0;
+            for (let y = 0; y < height; y += 4) {
+              const ly = y + sh; if (ly < 0 || ly >= pl.length) continue;
+              e += Math.abs(pf[y] - pl[ly]); n++;
+            }
+            if (n > 50) {
+              const avg = e / n; errs.push(avg);
+              // Strictly better, OR an equal/flat tie that is closer to 0 — without this
+              // bias a flat/repeating-layout landscape would lock onto the FIRST shift
+              // tried (-maxShift) and badly misalign a correct page (review finding #2).
+              if (avg < bestErr - 1e-9 || (Math.abs(avg - bestErr) <= 1e-9 && Math.abs(sh) < Math.abs(alignShift))) {
+                bestErr = avg; alignShift = sh;
+              }
+            }
+          }
+          errs.sort((a, b) => a - b);
+          const median = errs.length ? errs[Math.floor(errs.length / 2)] : 0;
+          // Confidence is a sharp-peak measure; null = "couldn't register" (don't fake high
+          // confidence — review finding #4). A shift that railed to the search bound means no
+          // real registration was found, so treat it as low confidence (finding #10).
+          visualAlignConfidence = (errs.length && median > 0) ? Math.max(0, Math.min(1, 1 - bestErr / median)) : null;
+          if (Math.abs(alignShift) >= maxShift - 2) visualAlignConfidence = visualAlignConfidence === null ? 0 : Math.min(visualAlignConfidence, 0.1);
+          if (alignShift !== 0) console.log(`📐 Vertical alignment: live shifted ${alignShift}px (confidence ${visualAlignConfidence === null ? 'n/a' : visualAlignConfidence.toFixed(2)}).`);
+        } catch (alignErr) {
+          console.warn('⚠️ Alignment skipped (non-critical):', alignErr.message);
+          alignShift = 0; visualAlignConfidence = null;
+        }
+
+        // Row-based TypedArray copy — ~10x faster than pixel-by-pixel loop.
+        // live row (y+alignShift) maps to figma row y; out-of-range rows stay white so they
+        // don't register as spurious black mismatches. Always fill first (cheap memset) so
+        // the buffer can never be stale even if the height invariant changes (finding #8).
         const rowBytes = width * 4;
+        cropLive.fill(255);
         for (let y = 0; y < height; y++) {
             cropFigma.set(imgFigma.data.subarray(imgFigma.width * y * 4, imgFigma.width * y * 4 + rowBytes), y * rowBytes);
-            cropLive.set(imgLive.data.subarray(imgLive.width * y * 4, imgLive.width * y * 4 + rowBytes), y * rowBytes);
+            const ly = y + alignShift;
+            if (ly >= 0 && ly < imgLive.height) {
+              cropLive.set(imgLive.data.subarray(imgLive.width * ly * 4, imgLive.width * ly * 4 + rowBytes), y * rowBytes);
+            }
         }
 
         const mismatchedPixels = pixelmatch(cropFigma, cropLive, rawDiff.data, width, height, { threshold: 0.15 });
@@ -1017,22 +578,32 @@ async function runAudit() {
         const contentCoverage = contentBlocks / (bCols * bRows);
         const scoreGap = pixelMatchPercent - blockScoreRaw;
 
-        if (contentCoverage < 0.35 && scoreGap > 20) {
-          // Sparse page + big gap = whitespace is inflating the raw score. Blend.
+        if (contentBlocks < 12) {
+          // Few content blocks (whitespace-heavy / sparse page). Trust raw ONLY when the few
+          // blocks actually match well — otherwise the free white=white matches inflate raw
+          // and would hide a genuinely wrong sparse page (review finding #5). So: good blocks
+          // → trust raw ("more white should match"); bad blocks → blend down.
+          contentMatchPercent = blockScoreRaw >= 60
+            ? pixelMatchPercent
+            : Math.round(pixelMatchPercent * 0.5 + blockScoreRaw * 0.5);
+        } else if (contentCoverage < 0.35 && scoreGap > 20) {
+          // Sparse page + big gap = whitespace is inflating the raw score. Blend down.
           contentMatchPercent = Math.round(pixelMatchPercent * 0.6 + blockScoreRaw * 0.4);
         } else {
           // Content-dense page or scores agree — raw score is reliable.
           contentMatchPercent = pixelMatchPercent;
         }
 
-        console.log(`🎯 Visual: ${contentMatchPercent}% (raw: ${pixelMatchPercent}%, block: ${Math.round(blockScoreRaw)}%, coverage: ${Math.round(contentCoverage * 100)}%)`);
+        const alignStr = visualAlignConfidence === null ? 'n/a' : visualAlignConfidence.toFixed(2);
+        console.log(`🎯 Visual: ${contentMatchPercent}% (raw: ${pixelMatchPercent}%, block: ${Math.round(blockScoreRaw)}%, coverage: ${Math.round(contentCoverage * 100)}%, align ${alignStr})`);
 
-        // === FAIL FAST IF TOTAL MISMATCH ===
-        if (pixelMatchPercent < 40 && blockScoreRaw < 35) {
-          console.error(`🚨 TOTAL MISMATCH DETECTED (raw: ${pixelMatchPercent}%, block: ${Math.round(blockScoreRaw)}%). Aborting audit.`);
-          const msg = `Visual match is too low (pixel match: ${pixelMatchPercent}%, layout match: ${Math.round(blockScoreRaw)}%). The live website does not resemble your Figma design, so the audit was not run. Please check the URL and try again.`;
-          fs.writeFileSync('playwright-report/error-log.txt', msg);
-          process.exit(1);
+        // === VISUAL WRONG-PAGE SIGNAL (no longer a hard abort) ===
+        // A very low pixel+block match OR a confidently-unregisterable alignment is the visual
+        // vote that "this may be the wrong page". null confidence means "couldn't tell" — it
+        // does NOT vote either way. The corroborated decision (>=2 of 3) is made at report time.
+        if ((pixelMatchPercent < 40 && blockScoreRaw < 35) || (visualAlignConfidence !== null && visualAlignConfidence < 0.2)) {
+          wrongPageSignals.visual = true;
+          console.log(`⚠️ Visual signal: low match (raw ${pixelMatchPercent}%, block ${Math.round(blockScoreRaw)}%, align ${alignStr}).`);
         }
 
         // --- GRID CLUSTERING ALGORITHM ---
@@ -1120,7 +691,14 @@ async function runAudit() {
         const rawClusters = clusters.filter(c => c !== null && c.w > 15 && c.h > 15);
 
         // === FILTER + REFINE clusters in a single page.evaluate (saves one IPC roundtrip) ===
-        const finalClusters = await page.evaluate((boxes) => {
+        // Captured mode has no live DOM to probe, so it skips the image-overlap filter
+        // and the DOM-snap refinement, keeping the raw clusters with the same size cap
+        // (viewport width == frameWidth). The downstream IoU-to-Figma-token match below
+        // does the real filtering, so the visual SCORE is unaffected — only box geometry
+        // is slightly coarser in captured mode.
+        const finalClusters = captured
+          ? rawClusters.filter(box => !(box.w > frameWidth * 0.5 || box.h > 400))
+          : await page.evaluate((boxes) => {
           return boxes.filter(box => {
             // Cap: skip boxes larger than 50% viewport width or 400px tall
             if (box.w > window.innerWidth * 0.5 || box.h > 400) return false;
@@ -1309,13 +887,11 @@ async function runAudit() {
       else if (r.type === 'TOKEN_UNCONNECTED') tokenUnconnected.push(r);
     }
 
-    // --- WRONG PAGE FAIL-FAST (missing element ratio) ---
+    // --- TOKEN WRONG-PAGE SIGNAL (missing element ratio; no longer a hard abort) ---
     const totalTokensChecked = tokenReport.length;
     if (totalTokensChecked > 5 && missingCount / totalTokensChecked > 0.6) {
-      console.log(`❌ WRONG PAGE: ${missingCount}/${totalTokensChecked} Figma tokens not found on page.`);
-      fs.writeFileSync('playwright-report/error-log.txt',
-        'Wrong Page: Most elements from your Figma frame were not found on this page. Please check that the URL matches your selected frame.');
-      process.exit(1);
+      wrongPageSignals.tokens = true;
+      console.log(`⚠️ Token signal: ${missingCount}/${totalTokensChecked} Figma tokens not found on page.`);
     }
 
     // === FILTER VISUAL ISSUES: skip boxes that overlap already-detected token issues ===
@@ -1372,43 +948,68 @@ async function runAudit() {
       console.log('🎯 TOKEN SCORE: honest compute failed (non-critical), using legacy formula:', scoreErr.message);
     }
 
-    // --- MATHEMATICAL MISMATCH FAST-FAIL ---
-    // Deliberately still keyed to the LEGACY score: its 15% threshold was calibrated
-    // on that inflated scale. On the honest scale a poorly-implemented-but-correct
-    // page can legitimately score 20-40%, and aborting those audits would be wrong.
+    // --- MATHEMATICAL MISMATCH → token signal (no longer a hard abort) ---
+    // Keyed to the LEGACY score (its 15% threshold was calibrated on that inflated scale).
+    // A very low token score is more token evidence that this may be the wrong page.
     if (legacyTokenScore < 15) {
-      console.log('❌ MATHEMATICAL MISMATCH: Final engine match score is less than 15%. This URL completely deviates from the Figma design.');
-      
-      // Write error log so the Github Action catches it and updates Supabase to 'failed' reliably
-      fs.writeFileSync('playwright-report/error-log.txt', 'Layout Mismatch: The provided website structure completely deviates from the Figma design. Please check the URL and try again.');
-      
-      // Exit with error code 1 so the Action drops into the 'failure()' block
-      process.exit(1);
+      wrongPageSignals.tokens = true;
+      console.log(`⚠️ Token signal: very low token score (legacy ${legacyTokenScore}%).`);
+    }
+
+    // === CORROBORATED WRONG-PAGE BANNER (replaces the 4 hard aborts) ===
+    // We never abort on a single signal — a low score IS the report's headline. Only when
+    // >=2 of the 3 independent signals (Gemini vision, token-found ratio, visual alignment)
+    // agree does the report open with a warning. The audit always completes.
+    const wrongVotes = (wrongPageSignals.gemini ? 1 : 0) + (wrongPageSignals.tokens ? 1 : 0) + (wrongPageSignals.visual ? 1 : 0);
+    if (wrongVotes >= 2) {
+      wrongPageBanner = 'This page may not match your Figma design — please check that the URL matches your selected frame.';
+      console.log(`⚠️ LOW MATCH corroborated by ${wrongVotes}/3 signals (gemini:${wrongPageSignals.gemini} tokens:${wrongPageSignals.tokens} visual:${wrongPageSignals.visual}) — producing report with a warning banner.`);
+    } else if (wrongVotes === 1) {
+      console.log(`ℹ️ One wrong-page signal fired (gemini:${wrongPageSignals.gemini} tokens:${wrongPageSignals.tokens} visual:${wrongPageSignals.visual}) — not enough to warn; report produced normally.`);
     }
 
     // === DYNAMIC MULTI-SCREENSHOT LOGIC ===
-    // Remove the image blackout so PDF screenshots show real website images
-    await page.evaluate(() => {
-      // Remove the blackout style tag
-      const blackoutStyles = document.querySelectorAll('style');
-      blackoutStyles.forEach(s => {
-        if (s.textContent.includes('brightness(0)')) s.remove();
+    // The issue markers are drawn onto a page and screenshotted. In LIVE mode that's
+    // the real page (blackout removed). In CAPTURED mode there is no live page, so we
+    // composite the markers over the clean (real-image) screenshot the extension
+    // captured — laid down in a throwaway page at the exact 1:1 frame coordinates.
+    let shotPage;
+    let cleanB64 = null;
+    if (captured) {
+      cleanB64 = fs.readFileSync(process.env.LIVE_SCREENSHOT_CLEAN || process.env.LIVE_SCREENSHOT).toString('base64');
+      shotPage = await browser.newPage();
+      await shotPage.setViewportSize({ width: frameWidth, height: frameHeight });
+    } else {
+      // Remove the image blackout so PDF screenshots show real website images
+      await page.evaluate(() => {
+        // Remove the blackout style tag
+        const blackoutStyles = document.querySelectorAll('style');
+        blackoutStyles.forEach(s => {
+          if (s.textContent.includes('brightness(0)')) s.remove();
+        });
       });
-    });
-    await page.waitForTimeout(50);
+      await page.waitForTimeout(50);
+      shotPage = page;
+    }
 
     const maxScreenshots = Math.min(2, Math.ceil(allIssues.length / 8));
     const issuesPerScreen = Math.ceil(allIssues.length / Math.max(1, maxScreenshots));
     console.log(`📸 Generating ${maxScreenshots} screenshot(s)...`);
-    
+
     const screenshotPaths = [];
     for (let i = 0; i < maxScreenshots; i++) {
         const chunkStart = i * issuesPerScreen;
         const chunkEnd = i === maxScreenshots - 1 ? allIssues.length : chunkStart + issuesPerScreen;
         const issueChunk = allIssues.slice(chunkStart, chunkEnd);
 
+        // Captured mode: lay the clean screenshot down as the page backdrop so markers
+        // land at the same page coordinates the issue rects were computed in.
+        if (captured) {
+          await shotPage.setContent(`<!DOCTYPE html><html><head><style>*{margin:0;padding:0;box-sizing:border-box;}</style></head><body style="margin:0;"><img src="data:image/png;base64,${cleanB64}" style="display:block;width:${frameWidth}px;height:auto;" /></body></html>`, { waitUntil: 'load' });
+        }
+
         // Single evaluate: clear markers + draw new markers + calculate bounds (saves 2 IPC roundtrips)
-        const contentBounds = await page.evaluate(({ issues, palette }) => {
+        const contentBounds = await shotPage.evaluate(({ issues, palette }) => {
             // 1. Clear old markers
             document.querySelectorAll('.audit-marker-box, .audit-marker-badge').forEach(el => el.remove());
 
@@ -1471,9 +1072,10 @@ async function runAudit() {
         }, { issues: issueChunk, palette: ISSUE_PALETTE });
 
         // Take screenshot directly into memory — no disk write/read roundtrip
-        const buffer = await page.screenshot({ fullPage: true, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
+        const buffer = await shotPage.screenshot({ fullPage: true, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
         screenshotPaths.push(buffer.toString('base64'));
     }
+    if (captured && shotPage) await shotPage.close();
 
     const auditDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
@@ -1551,6 +1153,7 @@ async function runAudit() {
 </style>
 </head>
 <body style="margin:0;font-family:sans-serif;background:#ffffff;">
+  ${wrongPageBanner ? `<div style="background:#FEF3C7;border-bottom:2px solid #F59E0B;color:#92400E;padding:14px 24px;font-size:14px;font-weight:600;">⚠️ ${wrongPageBanner}</div>` : ''}
   <div style="background:linear-gradient(135deg,#0f5ec4 0%,#3da5ff 100%);padding:24px 24px 20px;color:#fff;">
     <div style="display:flex;align-items:center;margin-bottom:16px;">
       <img src="https://raw.githubusercontent.com/soumyaux/ui-match-engine/main/UI%20Match%20LOGO.png" alt="UI Match Logo" style="height:32px;margin-right:12px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.1));" />
@@ -1597,6 +1200,13 @@ async function runAudit() {
   <!-- Premium Footer — pinned to the bottom of the page where the content ends.
        #footer-spacer height is computed at render time (see PDF render step). -->
   <div id="footer-spacer" style="height:0;"></div>
+  ${scanId ? `<div style="margin: 24px 24px 0; background:#ffffff; border:1px solid #e2e8f0; border-radius:12px; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; break-inside:avoid; page-break-inside:avoid;">
+    <div style="font-size:14px; color:#0f172a; font-weight:600;">Was this report accurate?</div>
+    <div style="display:flex; gap:10px;">
+      <a href="${workerOrigin}/feedback?scan_id=${scanId}&amp;vote=up" target="_blank" style="background:#ecfdf5; color:#047857; border:1px solid #a7f3d0; padding:8px 16px; border-radius:8px; font-size:13px; font-weight:600; text-decoration:none;">👍 Yes, accurate</a>
+      <a href="${workerOrigin}/feedback?scan_id=${scanId}&amp;vote=down" target="_blank" style="background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; padding:8px 16px; border-radius:8px; font-size:13px; font-weight:600; text-decoration:none;">👎 Something's off</a>
+    </div>
+  </div>` : ''}
   <div style="margin: 24px 24px 0; background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; display: flex; justify-content: space-between; align-items: center; break-inside: avoid; page-break-inside: avoid;">
     <div style="font-size: 14px; color: #475569;">
       Designed & built with <span style="color:#ef4444">❤️</span> by
@@ -1650,6 +1260,8 @@ async function runAudit() {
       visualMatchScore,
       rawVisualScore: pixelMatchPercent,
       totalIssues: allIssues.length,
+      wrongPageBanner,                       // non-empty when >=2 signals say wrong page
+      wrongPageSignals,                      // {gemini, tokens, visual} — for the dashboard
       tokens: tokenReport
     };
     fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(finalResults, null, 2));
