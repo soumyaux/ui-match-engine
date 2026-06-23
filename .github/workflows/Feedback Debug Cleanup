@@ -1,0 +1,45 @@
+name: 🧹 Feedback Debug Cleanup (60-day retention)
+
+# Deletes the debug bundles preserved on down-votes (Figma image, report PDF, tokens,
+# meta) once the scan's feedback is older than 60 days. DB-driven: we query the
+# down-voted scans past the cutoff and delete their KNOWN object paths — no recursive
+# storage listing needed. Runs after the weekly audit-results purge.
+
+on:
+  schedule:
+    - cron: '0 1 * * 0'   # Sundays 01:00 UTC (cleanup.yml runs at 00:00)
+  workflow_dispatch:
+
+jobs:
+  cleanup-feedback-debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete down-vote debug bundles older than 60 days
+        run: |
+          CUTOFF=$(date -u -d '60 days ago' '+%Y-%m-%d')
+          echo "Cutoff (delete down-vote bundles before): $CUTOFF"
+
+          ROWS=$(curl -s "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?feedback=eq.down&feedback_at=lt.${CUTOFF}&select=id,figma_id" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}")
+
+          if [[ "$ROWS" == *"\"code\""* || "$ROWS" == *"\"message\""* ]]; then
+            echo "❌ Supabase query error: $ROWS"; exit 1
+          fi
+
+          COUNT=$(echo "$ROWS" | jq 'length')
+          echo "Found $COUNT expired debug bundle(s)"
+          [ "$COUNT" = "0" ] && { echo "Nothing to delete. ✅"; exit 0; }
+
+          echo "$ROWS" | jq -c '.[]' | while read -r row; do
+            SID=$(echo "$row" | jq -r '.id')
+            OWNER=$(echo "$row" | jq -r '.figma_id // "anon"' | sed 's/[^a-zA-Z0-9_-]/_/g')
+            B="$OWNER/$SID"
+            PREFIXES=$(jq -nc --arg b "$B" '[$b+"/figma.png",$b+"/report.pdf",$b+"/tokens.json",$b+"/meta.json",$b+"/live-clean.png"]')
+            curl -s -X DELETE "${{ secrets.SUPABASE_URL }}/storage/v1/object/feedback-debug" \
+              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"prefixes\": $PREFIXES}" > /dev/null
+            echo "  🗑️  deleted bundle $B"
+          done
+          echo "✅ Feedback debug cleanup complete"
