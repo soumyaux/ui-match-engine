@@ -72,9 +72,12 @@ jobs:
             curl -sL "${B}live-viewport.png" -o live-viewport.png &
           fi
           wait
-          [ -f tokens.json ] && echo "Tokens: $(wc -c < tokens.json) bytes"
-          [ -f figma-frame.png ] && echo "Figma PNG: $(wc -c < figma-frame.png) bytes"
-          [ -f captured-report.json ] && echo "Captured report: $(wc -c < captured-report.json) bytes"
+          # `|| true` so a missing optional file (e.g. captured-report.json on a normal
+          # cloud audit) doesn't make this the step's failing last command → false "Audit
+          # failed unexpectedly".
+          [ -f tokens.json ] && echo "Tokens: $(wc -c < tokens.json) bytes" || true
+          [ -f figma-frame.png ] && echo "Figma PNG: $(wc -c < figma-frame.png) bytes" || true
+          [ -f captured-report.json ] && echo "Captured report: $(wc -c < captured-report.json) bytes" || true
 
       # Single combined cache (was two separate cache steps = two sequential
       # restore round-trips). node_modules and the Playwright browser always
