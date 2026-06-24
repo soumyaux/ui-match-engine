@@ -26,6 +26,10 @@ on:
         description: "Figma frame name"
         required: false
         default: ""
+      capture_base:
+        description: "Browser-capture artifact URL prefix (empty = normal cloud audit)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -58,9 +62,19 @@ jobs:
           if [ -n "${{ github.event.inputs.figma_image_url }}" ]; then
             curl -sL "${{ github.event.inputs.figma_image_url }}" -o figma-frame.png &
           fi
+          # Browser-capture artifacts (login/VPN path): all share one prefix.
+          if [ -n "${{ github.event.inputs.capture_base }}" ]; then
+            B="${{ github.event.inputs.capture_base }}"
+            curl -sL "${B}report.json"       -o captured-report.json &
+            curl -sL "${B}shadow.json"       -o captured-shadow.json &
+            curl -sL "${B}live-blackout.png" -o live-blackout.png &
+            curl -sL "${B}live-clean.png"    -o live-clean.png &
+            curl -sL "${B}live-viewport.png" -o live-viewport.png &
+          fi
           wait
           [ -f tokens.json ] && echo "Tokens: $(wc -c < tokens.json) bytes"
           [ -f figma-frame.png ] && echo "Figma PNG: $(wc -c < figma-frame.png) bytes"
+          [ -f captured-report.json ] && echo "Captured report: $(wc -c < captured-report.json) bytes"
 
       # Single combined cache (was two separate cache steps = two sequential
       # restore round-trips). node_modules and the Playwright browser always
@@ -81,6 +95,18 @@ jobs:
         run: |
           npm install playwright pixelmatch pngjs
           npx playwright install --with-deps chromium
+
+      # Captured mode (login/VPN): point the engine at the browser-captured artifacts.
+      # Set ONLY when capture_base is present, so normal cloud audits are untouched —
+      # the engine treats CAPTURED_REPORT being set as the switch into captured mode.
+      - name: 🧩 Configure Captured Mode
+        if: ${{ github.event.inputs.capture_base != '' }}
+        run: |
+          echo "CAPTURED_REPORT=captured-report.json" >> $GITHUB_ENV
+          echo "CAPTURED_SHADOW=captured-shadow.json" >> $GITHUB_ENV
+          echo "LIVE_SCREENSHOT=live-blackout.png" >> $GITHUB_ENV
+          echo "LIVE_SCREENSHOT_CLEAN=live-clean.png" >> $GITHUB_ENV
+          echo "LIVE_VIEWPORT=live-viewport.png" >> $GITHUB_ENV
 
       - name: 🔍 Run Audit Engine
         run: node engine.js
