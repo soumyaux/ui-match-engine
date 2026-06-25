@@ -2,7 +2,7 @@ name: 🧹 Feedback Debug Cleanup (30-day retention)
 
 # Deletes the debug bundles preserved on down-votes (Figma image, report PDF, tokens,
 # meta) once the scan's feedback is older than 30 days. DB-driven: we query the
-# down-voted scans past the cutoff and delete their KNOWN object paths — no recursive
+# down-voted scans past the cutoff and delete their KNOWN object paths - no recursive
 # storage listing needed. Runs after the weekly audit-results purge.
 
 on:
