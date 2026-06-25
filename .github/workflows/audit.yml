@@ -100,7 +100,7 @@ jobs:
           npx playwright install --with-deps chromium
 
       # Captured mode (login/VPN): point the engine at the browser-captured artifacts.
-      # Set ONLY when capture_base is present, so normal cloud audits are untouched —
+      # Set ONLY when capture_base is present, so normal cloud audits are untouched -
       # the engine treats CAPTURED_REPORT being set as the switch into captured mode.
       - name: 🧩 Configure Captured Mode
         if: ${{ github.event.inputs.capture_base != '' }}
