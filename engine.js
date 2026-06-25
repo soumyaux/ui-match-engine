@@ -20,14 +20,14 @@ async function runAudit() {
   let browser;
   try {
     const targetUrl = process.env.TARGET_URL;
-    // Identity + worker origin — used to embed a per-scan feedback link in the PDF.
+    // Identity + worker origin - used to embed a per-scan feedback link in the PDF.
     const scanId = process.env.SCAN_ID || '';
     const workerOrigin = (process.env.WORKER_ORIGIN || 'https://ui-match-proxy.soumyasahoo473.workers.dev').replace(/\/+$/, '');
-    // Corroboration signals for "is this the wrong page?" — collected through the run and
+    // Corroboration signals for "is this the wrong page?" - collected through the run and
     // evaluated ONCE at report time. We no longer hard-abort on any single signal; a low
     // score is itself the report's headline. Only a 2-of-3 agreement raises a warning
-    // banner, and the report is ALWAYS produced. (Genuine "can't audit" cases — page won't
-    // load, login wall, dead URL — still exit, because there is no data to report.)
+    // banner, and the report is ALWAYS produced. (Genuine "can't audit" cases - page won't
+    // load, login wall, dead URL - still exit, because there is no data to report.)
     const wrongPageSignals = { gemini: false, tokens: false, visual: false };
     let visualAlignConfidence = null; // set during visual scoring; 0..1, null = couldn't compute/register
     let wrongPageBanner = '';        // non-empty → shown atop the report
@@ -50,7 +50,7 @@ async function runAudit() {
       figmaTokens = [];
     }
 
-    // Extract frame metadata safely — prefer env var (from worker→GitHub dispatch)
+    // Extract frame metadata safely - prefer env var (from worker→GitHub dispatch)
     const frameName = process.env.FRAME_NAME || (figmaTokens[0] && figmaTokens[0]._frameName) || 'Selected Frame';
     const frameWidth = (figmaTokens[0] && figmaTokens[0]._frameWidth) || 1440;
     const frameHeight = (figmaTokens[0] && figmaTokens[0]._frameHeight) || 900;
@@ -68,13 +68,13 @@ async function runAudit() {
     // When the UI Match browser extension has already rendered, probed and
     // screenshotted the live page in the user's own browser (so login- and
     // VPN-protected pages work), it ships those artifacts as files. We then skip
-    // ALL live-page work — navigation, normalization, auth-wall detection, the DOM
-    // probe and the screenshots — and reuse the captured artifacts. The browser is
+    // ALL live-page work - navigation, normalization, auth-wall detection, the DOM
+    // probe and the screenshots - and reuse the captured artifacts. The browser is
     // still launched, but only to render the final PDF and composite issue markers
     // onto the captured screenshot.
     const captured = !!process.env.CAPTURED_REPORT && fs.existsSync(process.env.CAPTURED_REPORT);
     // Debug hook used by the test suite: when set (live mode only), the engine writes
-    // the exact capture artifacts the extension is expected to produce — this doubles
+    // the exact capture artifacts the extension is expected to produce - this doubles
     // as the reference definition of the capture contract.
     const dumpDir = (!captured && process.env.DUMP_CAPTURE) ? process.env.DUMP_CAPTURE : null;
     if (dumpDir && !fs.existsSync(dumpDir)) fs.mkdirSync(dumpDir, { recursive: true });
@@ -96,7 +96,7 @@ async function runAudit() {
 
       // TIER 1: domcontentloaded @ 60s
       // Works for most sites. Fires as soon as HTML is parsed.
-      // 'networkidle' is intentionally avoided — Shopify/e-commerce sites fire
+      // 'networkidle' is intentionally avoided - Shopify/e-commerce sites fire
       // persistent analytics/tracking requests (Meta Pixel, GA4, Klaviyo) that
       // prevent networkidle from ever settling within a reasonable timeout.
       try {
@@ -122,19 +122,19 @@ async function runAudit() {
       }
 
       // Soft-fail codes (401, 403, 429): Playwright may have rendered the page via JS.
-      // Continue — the auth wall detector after page normalization will decide.
+      // Continue - the auth wall detector after page normalization will decide.
       if (httpStatus >= 400) {
-        console.warn(`⚠️ HTTP ${httpStatus} received, but continuing — page may have rendered content.`);
+        console.warn(`⚠️ HTTP ${httpStatus} received, but continuing - page may have rendered content.`);
       }
 
-      // Wait for full page load (images, stylesheets) — with a 30s safety cap
+      // Wait for full page load (images, stylesheets) - with a 30s safety cap
       await page.waitForLoadState('load', { timeout: 30000 }).catch(() => {
-        console.warn('⚠️ load state timed out — proceeding with partial load.');
+        console.warn('⚠️ load state timed out - proceeding with partial load.');
       });
 
       // Wait for any client-side redirects to settle before touching the execution context
       await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {
-        console.warn('⚠️ networkidle timed out — proceeding.');
+        console.warn('⚠️ networkidle timed out - proceeding.');
       });
     } catch (navError) {
       console.error(`❌ Failed to reach ${targetUrl}. Details: ${navError.message}`);
@@ -196,10 +196,10 @@ async function runAudit() {
     await page.waitForTimeout(200);
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(300);
-    console.log('✅ Environment normalized — fonts loaded, animations frozen, dynamic content hidden.');
+    console.log('✅ Environment normalized - fonts loaded, animations frozen, dynamic content hidden.');
 
     // ── AUTH WALL DETECTION ──
-    // Runs on EVERY page — many protected sites return HTTP 200 with a login form,
+    // Runs on EVERY page - many protected sites return HTTP 200 with a login form,
     // or redirect to a login URL with a 302→200 chain.
     {
       const authCheck = await page.evaluate(() => {
@@ -212,7 +212,7 @@ async function runAudit() {
                                   '/accounts/login', '/user/login', '/session/new'];
         const urlIsLogin = loginUrlPatterns.some(p => url.includes(p));
 
-        // 2. Password field — strongest signal for a login form
+        // 2. Password field - strongest signal for a login form
         const hasPasswordField = !!document.querySelector(
           'input[type="password"], input[name*="password"], input[name*="passwd"]'
         );
@@ -231,7 +231,7 @@ async function runAudit() {
                               || bodyText.includes('verify you are human')
                               || bodyText.includes('just a moment');
 
-        // 5. Minimal content — page is effectively empty/blocked
+        // 5. Minimal content - page is effectively empty/blocked
         const visibleTextLength = bodyText.replace(/\s+/g, '').length;
         const isNearlyEmpty = visibleTextLength < 100;
 
@@ -239,13 +239,13 @@ async function runAudit() {
       });
 
       if (authCheck.isCfChallenge) {
-        console.error('❌ Cloudflare bot challenge detected — site blocks automated browsers.');
+        console.error('❌ Cloudflare bot challenge detected - site blocks automated browsers.');
         fs.writeFileSync('playwright-report/error-log.txt',
           'This website uses bot protection (e.g. Cloudflare) that blocks automated browsers. Please use a publicly accessible URL.');
         process.exit(1);
       }
 
-      // Password field alone is not enough — many public pages embed a login widget in the nav.
+      // Password field alone is not enough - many public pages embed a login widget in the nav.
       // Require at least one corroborating signal (auth URL or auth title) before blocking.
       const isLoginPage = authCheck.urlIsLogin || authCheck.titleIsAuth;
       if ((authCheck.hasPasswordField && isLoginPage) || (authCheck.urlIsLogin && authCheck.titleIsAuth && authCheck.hasLoginFormInBody)) {
@@ -257,19 +257,19 @@ async function runAudit() {
 
       if (httpStatus === 401 || httpStatus === 403) {
         if (authCheck.isNearlyEmpty || authCheck.titleIsAuth) {
-          console.error(`❌ Page returned ${httpStatus} — access blocked.`);
+          console.error(`❌ Page returned ${httpStatus} - access blocked.`);
           fs.writeFileSync('playwright-report/error-log.txt',
             'Access denied (HTTP 403). The website blocked the request. Please try a publicly accessible URL.');
           process.exit(1);
         }
-        // Page has real content despite 4xx — proceed (e.g. SPA that renders despite 403 header)
+        // Page has real content despite 4xx - proceed (e.g. SPA that renders despite 403 header)
         console.log(`✅ Auth check passed: page has content despite HTTP ${httpStatus}. Continuing audit.`);
       }
     }
-    } // end if (!captured) — live navigation, normalization & auth-wall detection
+    } // end if (!captured) - live navigation, normalization & auth-wall detection
 
     // ── GEMINI VISION PAGE MATCH CHECK ──
-    // Runs BEFORE token validation — catches wrong pages early, saves ~5s on mismatches.
+    // Runs BEFORE token validation - catches wrong pages early, saves ~5s on mismatches.
     // Uses a quick viewport screenshot (no blackout, no fullPage) for speed.
     const geminiKey = process.env.GEMINI_API_KEY;
     const figmaImgPath = process.env.FIGMA_IMAGE;
@@ -282,7 +282,7 @@ async function runAudit() {
       try {
         console.log('🤖 Running Gemini Vision page match check...');
 
-        // Quick viewport-only screenshot (no blackout applied yet — real page)
+        // Quick viewport-only screenshot (no blackout applied yet - real page)
         const geminiLiveBuffer = captured ? fs.readFileSync(viewportPath) : await page.screenshot({ fullPage: false });
 
         // Crop Figma PNG to viewport height using bulk TypedArray copy (faster than pixel loop)
@@ -301,7 +301,7 @@ async function runAudit() {
             body: JSON.stringify({
               contents: [{
                 parts: [
-                  { text: 'I have two webpage screenshots for a design audit. The first is a Figma design mockup. The second is a live website screenshot. Are these showing the same web page or very similar UI layout? Focus ONLY on page structure, navigation placement, section layout, and overall composition — ignore image content, placeholder text, and real data differences. Answer only YES or NO.' },
+                  { text: 'I have two webpage screenshots for a design audit. The first is a Figma design mockup. The second is a live website screenshot. Are these showing the same web page or very similar UI layout? Focus ONLY on page structure, navigation placement, section layout, and overall composition - ignore image content, placeholder text, and real data differences. Answer only YES or NO.' },
                   { inline_data: { mime_type: 'image/png', data: figmaB64 } },
                   { inline_data: { mime_type: 'image/png', data: liveB64 } }
                 ]
@@ -310,7 +310,7 @@ async function runAudit() {
             }),
             // NEW generous safety net (no timeout existed before): a hung Gemini call
             // used to stall the job until GitHub's 10-min cancel, and cancelled jobs
-            // skip the "Mark Failed" step — leaving the scan stuck in "running".
+            // skip the "Mark Failed" step - leaving the scan stuck in "running".
             // On abort, the catch below logs a warning and the audit CONTINUES.
             signal: AbortSignal.timeout(60000)
           }
@@ -322,13 +322,13 @@ async function runAudit() {
           console.log(`🤖 Gemini page match: ${answer}`);
 
           if (answer.startsWith('NO')) {
-            // Gemini's vote that this may be the wrong page. Recorded, not fatal — the
+            // Gemini's vote that this may be the wrong page. Recorded, not fatal - the
             // corroborated decision (>=2 of 3 signals) is made at report time.
             wrongPageSignals.gemini = true;
             console.log('⚠️ Gemini signal: page may not match the Figma design.');
           }
         } else {
-          console.warn(`⚠️ Gemini API returned ${geminiRes.status} — skipping check.`);
+          console.warn(`⚠️ Gemini API returned ${geminiRes.status} - skipping check.`);
         }
       } catch (geminiErr) {
         console.warn('⚠️ Gemini Vision check failed (non-critical):', geminiErr.message);
@@ -358,7 +358,7 @@ async function runAudit() {
           ? JSON.parse(fs.readFileSync(process.env.CAPTURED_SHADOW, 'utf8')) : null)
       : await page.evaluate(() => window.__shadowScore || null).catch(() => null);
 
-    // Capture-artifact dump (live mode only) — reference for what the extension produces.
+    // Capture-artifact dump (live mode only) - reference for what the extension produces.
     if (dumpDir) {
       try {
         fs.writeFileSync(`${dumpDir}/report.json`, JSON.stringify(tokenReport));
@@ -376,7 +376,7 @@ async function runAudit() {
       // Blacked-out full-page screenshot the extension captured (for pixelmatch).
       liveScreenshotBuffer = fs.readFileSync(process.env.LIVE_SCREENSHOT);
     } else {
-    // Dump the clean (real-image) full-page + viewport screenshots BEFORE blackout —
+    // Dump the clean (real-image) full-page + viewport screenshots BEFORE blackout -
     // the extension provides these; the clean full-page is the backdrop for issue markers.
     if (dumpDir) {
       try {
@@ -410,7 +410,7 @@ async function runAudit() {
     if (!figmaImagePath || !fs.existsSync(figmaImagePath)) {
       // Log-only flag for calibration: today the visual score silently defaults to
       // a perfect 100% when there is no Figma image to compare against.
-      console.log('🕵️ SHADOW VISUAL NOTE: no Figma image available — visual score defaulted to 100% without any comparison.');
+      console.log('🕵️ SHADOW VISUAL NOTE: no Figma image available - visual score defaulted to 100% without any comparison.');
     }
 
     if (figmaImagePath && fs.existsSync(figmaImagePath)) {
@@ -430,7 +430,7 @@ async function runAudit() {
         // --- VERTICAL ALIGNMENT (pre-pass) ---
         // A cookie bar / announcement strip / taller real hero shifts the whole live page
         // down. Naive pixel(x,y)->pixel(x,y) comparison then sees almost every row as
-        // different — a structurally-correct page scores ~16%. We first register the two
+        // different - a structurally-correct page scores ~16%. We first register the two
         // images by finding the vertical shift whose per-row "ink profile" (fraction of
         // non-background pixels) best matches, then compare the aligned crop. The sharpness
         // of that match also gives an alignment CONFIDENCE used later as a wrong-page signal.
@@ -460,7 +460,7 @@ async function runAudit() {
             }
             if (n > 50) {
               const avg = e / n; errs.push(avg);
-              // Strictly better, OR an equal/flat tie that is closer to 0 — without this
+              // Strictly better, OR an equal/flat tie that is closer to 0 - without this
               // bias a flat/repeating-layout landscape would lock onto the FIRST shift
               // tried (-maxShift) and badly misalign a correct page (review finding #2).
               if (avg < bestErr - 1e-9 || (Math.abs(avg - bestErr) <= 1e-9 && Math.abs(sh) < Math.abs(alignShift))) {
@@ -471,7 +471,7 @@ async function runAudit() {
           errs.sort((a, b) => a - b);
           const median = errs.length ? errs[Math.floor(errs.length / 2)] : 0;
           // Confidence is a sharp-peak measure; null = "couldn't register" (don't fake high
-          // confidence — review finding #4). A shift that railed to the search bound means no
+          // confidence - review finding #4). A shift that railed to the search bound means no
           // real registration was found, so treat it as low confidence (finding #10).
           visualAlignConfidence = (errs.length && median > 0) ? Math.max(0, Math.min(1, 1 - bestErr / median)) : null;
           if (Math.abs(alignShift) >= maxShift - 2) visualAlignConfidence = visualAlignConfidence === null ? 0 : Math.min(visualAlignConfidence, 0.1);
@@ -481,7 +481,7 @@ async function runAudit() {
           alignShift = 0; visualAlignConfidence = null;
         }
 
-        // Row-based TypedArray copy — ~10x faster than pixel-by-pixel loop.
+        // Row-based TypedArray copy - ~10x faster than pixel-by-pixel loop.
         // live row (y+alignShift) maps to figma row y; out-of-range rows stay white so they
         // don't register as spurious black mismatches. Always fill first (cheap memset) so
         // the buffer can never be stale even if the height invariant changes (finding #8).
@@ -502,7 +502,7 @@ async function runAudit() {
 
         // --- CONTENT-AWARE BLOCK-BASED VISUAL SCORE ---
         // Problem: pixel-based scoring inflates scores on pages with lots of whitespace
-        // because white=white pixels are "free matches." Humans don't judge this way —
+        // because white=white pixels are "free matches." Humans don't judge this way -
         // they focus on content regions and weight each region equally.
         //
         // Solution: divide the image into small blocks, detect background using a
@@ -534,7 +534,7 @@ async function runAudit() {
         const isBg = (data, i, bg) =>
           Math.abs(data[i]-bg.r) <= BG_TOL && Math.abs(data[i+1]-bg.g) <= BG_TOL && Math.abs(data[i+2]-bg.b) <= BG_TOL;
 
-        // Step 2: Block-based scoring — each 20x20 block gets equal weight
+        // Step 2: Block-based scoring - each 20x20 block gets equal weight
         const BLOCK = 20;
         const bCols = Math.ceil(width / BLOCK);
         const bRows = Math.ceil(height / BLOCK);
@@ -563,7 +563,7 @@ async function runAudit() {
             // Skip blocks that are >85% background in BOTH images (whitespace)
             if (bgCount / blockPx > 0.85) continue;
 
-            // Score this content block — forgive <8% mismatches (font rendering / anti-aliasing noise)
+            // Score this content block - forgive <8% mismatches (font rendering / anti-aliasing noise)
             contentBlocks++;
             contentBlockScore += missPx / blockPx < 0.08 ? 1 : (blockPx - missPx) / blockPx;
           }
@@ -580,7 +580,7 @@ async function runAudit() {
 
         if (contentBlocks < 12) {
           // Few content blocks (whitespace-heavy / sparse page). Trust raw ONLY when the few
-          // blocks actually match well — otherwise the free white=white matches inflate raw
+          // blocks actually match well - otherwise the free white=white matches inflate raw
           // and would hide a genuinely wrong sparse page (review finding #5). So: good blocks
           // → trust raw ("more white should match"); bad blocks → blend down.
           contentMatchPercent = blockScoreRaw >= 60
@@ -590,7 +590,7 @@ async function runAudit() {
           // Sparse page + big gap = whitespace is inflating the raw score. Blend down.
           contentMatchPercent = Math.round(pixelMatchPercent * 0.6 + blockScoreRaw * 0.4);
         } else {
-          // Content-dense page or scores agree — raw score is reliable.
+          // Content-dense page or scores agree - raw score is reliable.
           contentMatchPercent = pixelMatchPercent;
         }
 
@@ -599,7 +599,7 @@ async function runAudit() {
 
         // === VISUAL WRONG-PAGE SIGNAL (no longer a hard abort) ===
         // A very low pixel+block match OR a confidently-unregisterable alignment is the visual
-        // vote that "this may be the wrong page". null confidence means "couldn't tell" — it
+        // vote that "this may be the wrong page". null confidence means "couldn't tell" - it
         // does NOT vote either way. The corroborated decision (>=2 of 3) is made at report time.
         if ((pixelMatchPercent < 40 && blockScoreRaw < 35) || (visualAlignConfidence !== null && visualAlignConfidence < 0.2)) {
           wrongPageSignals.visual = true;
@@ -694,7 +694,7 @@ async function runAudit() {
         // Captured mode has no live DOM to probe, so it skips the image-overlap filter
         // and the DOM-snap refinement, keeping the raw clusters with the same size cap
         // (viewport width == frameWidth). The downstream IoU-to-Figma-token match below
-        // does the real filtering, so the visual SCORE is unaffected — only box geometry
+        // does the real filtering, so the visual SCORE is unaffected - only box geometry
         // is slightly coarser in captured mode.
         const finalClusters = captured
           ? rawClusters.filter(box => !(box.w > frameWidth * 0.5 || box.h > 400))
@@ -781,11 +781,11 @@ async function runAudit() {
         // cluster (was O(clusters × tokens × string-ops)). Skipped tokens could never
         // become bestToken, so the output is identical.
         const matchableTokens = designTokens.filter(token => {
-          // Skip container tokens — they cover entire sections and match everything
+          // Skip container tokens - they cover entire sections and match everything
           if (token.role === 'container') return false;
           // Skip tiny spacers
           if ((token.w || 0) < 15 && (token.h || 0) < 15) return false;
-          // Skip purely decorative shape tokens — visual diffs on decorative fills are noise
+          // Skip purely decorative shape tokens - visual diffs on decorative fills are noise
           const tName = (token.name || '').toLowerCase();
           const tIsDecor = tName.includes('image') || tName.includes('img') || tName.includes('icon') ||
               tName.includes('logo') || tName.includes('photo') || tName.includes('illustration') ||
@@ -876,7 +876,7 @@ async function runAudit() {
     // ══════════════════════════════════════════
     console.log('🖨️ Generating Professional HTML Report...');
     
-    // Single pass over tokenReport — replaces 6 separate .filter() calls
+    // Single pass over tokenReport - replaces 6 separate .filter() calls
     const tokenMinor = [], tokenLayout = [], tokenUnconnected = [];
     let validTokensCount = 0, missingCount = 0;
     for (const r of tokenReport) {
@@ -924,7 +924,7 @@ async function runAudit() {
     // Dynamically scale total rules evaluated to accurately reflect the volume of tokens vs volume of errors.
     const totalRulesChecked = Math.max(validTokensCount * 12, totalErrorsFound + Math.max(10, validTokensCount * 2));
     
-    // Legacy formula — kept ONLY to drive the <15% fail-fast below, whose threshold
+    // Legacy formula - kept ONLY to drive the <15% fail-fast below, whose threshold
     // is calibrated to this scale. It inflates badly (denominator = issues x 12 while
     // each issue carries 1-3 errors, and report dedup hides repeat failures), so it
     // is no longer displayed.
@@ -940,9 +940,9 @@ async function runAudit() {
       if (shadowStats && shadowStats.checked > 0) {
         const _denom = Math.max(shadowStats.checked, 10); // small-sample floor
         trueMatchScore = Math.max(0, Math.round(((_denom - shadowStats.failed) / _denom) * 100));
-        console.log(`🎯 TOKEN SCORE: ${trueMatchScore}% (legacy formula would show: ${legacyTokenScore}%) — rules checked: ${shadowStats.checked}, failed: ${shadowStats.failed}, missing elements: ${shadowStats.missing}`);
+        console.log(`🎯 TOKEN SCORE: ${trueMatchScore}% (legacy formula would show: ${legacyTokenScore}%) - rules checked: ${shadowStats.checked}, failed: ${shadowStats.failed}, missing elements: ${shadowStats.missing}`);
       } else {
-        console.log(`🎯 TOKEN SCORE: honest counters unavailable — falling back to legacy formula: ${legacyTokenScore}%`);
+        console.log(`🎯 TOKEN SCORE: honest counters unavailable - falling back to legacy formula: ${legacyTokenScore}%`);
       }
     } catch (scoreErr) {
       console.log('🎯 TOKEN SCORE: honest compute failed (non-critical), using legacy formula:', scoreErr.message);
@@ -957,22 +957,22 @@ async function runAudit() {
     }
 
     // === CORROBORATED WRONG-PAGE BANNER (replaces the 4 hard aborts) ===
-    // We never abort on a single signal — a low score IS the report's headline. Only when
+    // We never abort on a single signal - a low score IS the report's headline. Only when
     // >=2 of the 3 independent signals (Gemini vision, token-found ratio, visual alignment)
     // agree does the report open with a warning. The audit always completes.
     const wrongVotes = (wrongPageSignals.gemini ? 1 : 0) + (wrongPageSignals.tokens ? 1 : 0) + (wrongPageSignals.visual ? 1 : 0);
     if (wrongVotes >= 2) {
-      wrongPageBanner = 'This page may not match your Figma design — please check that the URL matches your selected frame.';
-      console.log(`⚠️ LOW MATCH corroborated by ${wrongVotes}/3 signals (gemini:${wrongPageSignals.gemini} tokens:${wrongPageSignals.tokens} visual:${wrongPageSignals.visual}) — producing report with a warning banner.`);
+      wrongPageBanner = 'This page may not match your Figma design - please check that the URL matches your selected frame.';
+      console.log(`⚠️ LOW MATCH corroborated by ${wrongVotes}/3 signals (gemini:${wrongPageSignals.gemini} tokens:${wrongPageSignals.tokens} visual:${wrongPageSignals.visual}) - producing report with a warning banner.`);
     } else if (wrongVotes === 1) {
-      console.log(`ℹ️ One wrong-page signal fired (gemini:${wrongPageSignals.gemini} tokens:${wrongPageSignals.tokens} visual:${wrongPageSignals.visual}) — not enough to warn; report produced normally.`);
+      console.log(`ℹ️ One wrong-page signal fired (gemini:${wrongPageSignals.gemini} tokens:${wrongPageSignals.tokens} visual:${wrongPageSignals.visual}) - not enough to warn; report produced normally.`);
     }
 
     // === DYNAMIC MULTI-SCREENSHOT LOGIC ===
     // The issue markers are drawn onto a page and screenshotted. In LIVE mode that's
     // the real page (blackout removed). In CAPTURED mode there is no live page, so we
     // composite the markers over the clean (real-image) screenshot the extension
-    // captured — laid down in a throwaway page at the exact 1:1 frame coordinates.
+    // captured - laid down in a throwaway page at the exact 1:1 frame coordinates.
     let shotPage;
     let cleanB64 = null;
     if (captured) {
@@ -1071,7 +1071,7 @@ async function runAudit() {
             return { width: vw, height: Math.min(Math.max(vh, maxY), 5000) };
         }, { issues: issueChunk, palette: ISSUE_PALETTE });
 
-        // Take screenshot directly into memory — no disk write/read roundtrip
+        // Take screenshot directly into memory - no disk write/read roundtrip
         const buffer = await shotPage.screenshot({ fullPage: true, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
         screenshotPaths.push(buffer.toString('base64'));
     }
@@ -1197,7 +1197,7 @@ async function runAudit() {
   </div>
   ${auditSections}
 
-  <!-- Premium Footer — pinned to the bottom of the page where the content ends.
+  <!-- Premium Footer - pinned to the bottom of the page where the content ends.
        #footer-spacer height is computed at render time (see PDF render step). -->
   <div id="footer-spacer" style="height:0;"></div>
   ${scanId ? `<div style="margin: 24px 24px 0; background:#ffffff; border:1px solid #e2e8f0; border-radius:12px; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; break-inside:avoid; page-break-inside:avoid;">
@@ -1217,7 +1217,7 @@ async function runAudit() {
 </body></html>`;
 
     // 5. Render final PDF report.
-    // The footer must sit at the BOTTOM of the page where the content ends — but
+    // The footer must sit at the BOTTOM of the page where the content ends - but
     // print CSS can't know how much space is left on that page (break-inside:avoid
     // cards shift content unpredictably). So we let the real print engine decide:
     // binary-search the #footer-spacer height for the largest value that does NOT
@@ -1261,7 +1261,7 @@ async function runAudit() {
       rawVisualScore: pixelMatchPercent,
       totalIssues: allIssues.length,
       wrongPageBanner,                       // non-empty when >=2 signals say wrong page
-      wrongPageSignals,                      // {gemini, tokens, visual} — for the dashboard
+      wrongPageSignals,                      // {gemini, tokens, visual} - for the dashboard
       tokens: tokenReport
     };
     fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(finalResults, null, 2));
