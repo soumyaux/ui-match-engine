@@ -1,9 +1,9 @@
 // ──────────────────────────────────────────────────────────────────────────
-// SHARED PROBE — single source of truth for the live-DOM design-token audit.
+// SHARED PROBE - single source of truth for the live-DOM design-token audit.
 //
 // This exact function runs in BOTH:
-//   • the cloud engine  — engine.js: page.evaluate(probePage, designTokens)
-//   • the browser extension — injected into the user's authenticated/VPN tab via
+//   • the cloud engine  - engine.js: page.evaluate(probePage, designTokens)
+//   • the browser extension - injected into the user's authenticated/VPN tab via
 //     chrome.scripting.executeScript({ func: probePage, args: [designTokens] })
 //
 // It is pure browser-context JS: it only touches its `tokens` argument and DOM/
@@ -23,10 +23,10 @@ function probePage(tokens) {
           if (s.length === 4) return '#' + s[1]+s[1]+s[2]+s[2]+s[3]+s[3];
           return s;
         }
-        // rgb/rgba — comma or space separated
+        // rgb/rgba - comma or space separated
         const rm = s.match(/rgba?\(\s*([\d.]+)\s*[, ]\s*([\d.]+)\s*[, ]\s*([\d.]+)/);
         if (rm) return `#${h2(rm[1])}${h2(rm[2])}${h2(rm[3])}`;
-        // hsl/hsla — comma or space separated
+        // hsl/hsla - comma or space separated
         const hm = s.match(/hsla?\(\s*([\d.]+)\s*[, ]\s*([\d.]+)%\s*[, ]\s*([\d.]+)%/);
         if (hm) {
           const h = parseFloat(hm[1]) / 360, sl = parseFloat(hm[2]) / 100, l = parseFloat(hm[3]) / 100;
@@ -34,7 +34,7 @@ function probePage(tokens) {
           const hue = (t) => { t = ((t%1)+1)%1; return t<1/6 ? p+(q-p)*6*t : t<0.5 ? q : t<2/3 ? p+(q-p)*(2/3-t)*6 : p; };
           return `#${h2(hue(h+1/3)*255)}${h2(hue(h)*255)}${h2(hue(h-1/3)*255)}`;
         }
-        // oklch(L C H) — convert via OKLAB → linear sRGB → sRGB
+        // oklch(L C H) - convert via OKLAB → linear sRGB → sRGB
         const om = s.match(/oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)/);
         if (om) {
           const L = parseFloat(om[1]), C = parseFloat(om[2]), H = parseFloat(om[3]) * Math.PI / 180;
@@ -105,7 +105,7 @@ function probePage(tokens) {
         return 'Component';
       }
 
-      // Cache all stylesheet rules once — avoids repeated DOM walk per token
+      // Cache all stylesheet rules once - avoids repeated DOM walk per token
       const _cachedSheetRules = [];
       for (const sheet of document.styleSheets) {
         try { _cachedSheetRules.push(...Array.from(sheet.cssRules || [])); } catch(e) {}
@@ -132,7 +132,7 @@ function probePage(tokens) {
         }
         return rules;
       }
-      // Memo per (element, property) — ancestor walks re-checked the same page
+      // Memo per (element, property) - ancestor walks re-checked the same page
       // wrappers for nearly every token. Styles are static at this point.
       const _varCheckMemo = new WeakMap();
       function hasCSSVarForProperty(el, cssProperty, checkAncestors) {
@@ -169,11 +169,11 @@ function probePage(tokens) {
 
       const results = [];
       // === DEDUPLICATION: Track DOM elements already checked ===
-      // Multiple Figma tokens can hit the same DOM element — only report each once
+      // Multiple Figma tokens can hit the same DOM element - only report each once
       const seenElements = new Map(); // DOM element → index in results
       const checkedPositions = new Set();
 
-      // === SHADOW SCORING (log-only — never displayed, never affects results) ===
+      // === SHADOW SCORING (log-only - never displayed, never affects results) ===
       // Counts every comparison actually performed, BEFORE report dedup/filtering,
       // so the Action log can show an honest pass/fail ratio next to the displayed
       // score. Fully guarded: any error here is swallowed and the audit continues.
@@ -262,12 +262,12 @@ function probePage(tokens) {
         
         // === MISSING ELEMENT: Figma has content here but live page has nothing ===
         if (!el || el === document.body || el === document.documentElement) {
-          // Skip image/decorative tokens — they cause false positives
+          // Skip image/decorative tokens - they cause false positives
           if (isImageOrDecor) return;
           // Only report if the Figma token is large enough to be a real component (not a spacer)
           if ((design.w || 0) > 50 && (design.h || 0) > 50) {
             // Shadow scoring: a missing element means every check it would have had
-            // failed (floor of 4) — counted before report dedup hides duplicates
+            // failed (floor of 4) - counted before report dedup hides duplicates
             try {
               const _n = Math.max(_shadowRuleCount(design, design.role || 'leaf', false), 4);
               _shadow.checked += _n;
@@ -289,7 +289,7 @@ function probePage(tokens) {
         }
         
         // === SKIP IRRELEVANT ELEMENTS ===
-        // Skip media/image/chart elements — these are dynamic content that always differs from Figma
+        // Skip media/image/chart elements - these are dynamic content that always differs from Figma
         const tag = el.tagName.toUpperCase();
         if (tag === 'IMG' || tag === 'PICTURE' || tag === 'CANVAS' || tag === 'IFRAME' || tag === 'VIDEO' || tag === 'AUDIO') return;
         if (tag === 'SVG' || el.closest?.('svg')) return;
@@ -321,7 +321,7 @@ function probePage(tokens) {
         if (live.display === 'none' || live.visibility === 'hidden' || live.opacity === '0') return;
         // Skip elements positioned way outside the viewport (off-screen tricks)
         if (rect.right < 0 || rect.bottom < 0) return;
-        // Use Figma layer name for issue titles — much more useful for designers
+        // Use Figma layer name for issue titles - much more useful for designers
         // Clean it: take last segment of path (e.g., "Frame / Section / Button" → "Button")
         const _segments = (name && name !== 'unknown') ? name.split('/').map(s => s.trim()).filter(Boolean) : [];
         const figmaName = _segments.length >= 2
@@ -548,7 +548,7 @@ function probePage(tokens) {
             });
           }
         } else {
-          // Values match — check if CSS design token variables are actually being used
+          // Values match - check if CSS design token variables are actually being used
           const cssPropsToCheck = [];
           if (design.color && (role === 'text' || design.fs))
             cssPropsToCheck.push({ css: 'color', label: 'Text Color' });
