@@ -992,6 +992,9 @@ async function runAudit() {
       shotPage = page;
     }
 
+    // Audit screenshots are JPEG (see the capture call below for why). 85 is the
+    // point where compression artifacts stop being visible on the marker edges.
+    const SHOT_QUALITY = 85;
     const maxScreenshots = Math.min(2, Math.ceil(allIssues.length / 8));
     const issuesPerScreen = Math.ceil(allIssues.length / Math.max(1, maxScreenshots));
     console.log(`📸 Generating ${maxScreenshots} screenshot(s)...`);
@@ -1071,8 +1074,13 @@ async function runAudit() {
             return { width: vw, height: Math.min(Math.max(vh, maxY), 5000) };
         }, { issues: issueChunk, palette: ISSUE_PALETTE });
 
-        // Take screenshot directly into memory - no disk write/read roundtrip
-        const buffer = await shotPage.screenshot({ fullPage: true, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height } });
+        // Take screenshot directly into memory - no disk write/read roundtrip.
+        // JPEG, not PNG: these are full-page captures of real websites (photos,
+        // gradients, shadows), where lossless PNG runs 3-5x heavier for no visible
+        // gain at the size they render inside an A4 page. The markers drawn above are
+        // solid-colour shapes with hard edges, which JPEG handles well. A PNG report
+        // on a content-heavy page used to exceed the email Worker's memory ceiling.
+        const buffer = await shotPage.screenshot({ fullPage: true, clip: { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height }, type: 'jpeg', quality: SHOT_QUALITY });
         screenshotPaths.push(buffer.toString('base64'));
     }
     if (captured && shotPage) await shotPage.close();
@@ -1132,7 +1140,7 @@ async function runAudit() {
           <span style="background:#f1f5f9;padding:4px 10px;border-radius:20px;font-size:12px;color:#475569;font-weight:500;">${chunkIssues.length} issue${chunkIssues.length !== 1 ? 's' : ''}</span>
         </h2>
         <div style="border-radius:12px;box-shadow:0 4px 24px -4px rgba(0,0,0,0.08);border:1px solid #e2e8f0;overflow:hidden;">
-          <img src="data:image/png;base64,${base64}" style="width:100%;height:auto;display:block;object-fit:contain;" />
+          <img src="data:image/jpeg;base64,${base64}" style="width:100%;height:auto;display:block;object-fit:contain;" />
         </div>
       </div>
       <div style="padding:16px 24px 24px;">
@@ -1147,6 +1155,9 @@ async function runAudit() {
 
     // 4. Build Final Output HTML
     const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<!-- Becomes the PDF's Title metadata: what a browser tab and a PDF viewer's title
+     bar show when the report is opened, instead of the raw filename. -->
+<title>UI Match Audit Report</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   .issue-card { break-inside: avoid; page-break-inside: avoid; }
@@ -1222,38 +1233,50 @@ async function runAudit() {
     // cards shift content unpredictably). So we let the real print engine decide:
     // binary-search the #footer-spacer height for the largest value that does NOT
     // add a new page. That pushes the footer flush to the bottom of the last page.
-    const reportPage = await browser.newPage();
-    await reportPage.setContent(reportHtml, { waitUntil: 'load' });
-
     const pdfOptions = { format: 'A4', printBackground: true, margin: { top: '24px', bottom: '24px', left: '24px', right: '24px' } };
     const countPdfPages = (buf) => {
       const counts = buf.toString('latin1').match(/\/Count (\d+)/g);
       return counts ? Math.max(...counts.map(c => parseInt(c.slice(7), 10))) : 1;
     };
-    const setFooterSpacer = (px) => reportPage.evaluate((h) => {
-      document.getElementById('footer-spacer').style.height = h + 'px';
-    }, px);
 
-    try {
-      const basePageCount = countPdfPages(await reportPage.pdf(pdfOptions));
-      // A4 printable height ≈ 1074px (1122px page minus 24px top/bottom margins)
-      let lo = 0, hi = 1075;
-      while (hi - lo > 4) {
-        const mid = Math.floor((lo + hi) / 2);
-        await setFooterSpacer(mid);
-        if (countPdfPages(await reportPage.pdf(pdfOptions)) > basePageCount) hi = mid;
-        else lo = mid;
+    // Renders `html` to a PDF buffer, positioning the footer flush to the bottom of
+    // the last page. Callable more than once because the size guard below may need to
+    // re-render with lighter screenshots - the spacer search has to run again then,
+    // since swapping the images changes where the content ends.
+    async function renderReportPdf(html) {
+      const reportPage = await browser.newPage();
+      try {
+        await reportPage.setContent(html, { waitUntil: 'load' });
+        const setFooterSpacer = (px) => reportPage.evaluate((h) => {
+          document.getElementById('footer-spacer').style.height = h + 'px';
+        }, px);
+
+        try {
+          const basePageCount = countPdfPages(await reportPage.pdf(pdfOptions));
+          // A4 printable height ≈ 1074px (1122px page minus 24px top/bottom margins)
+          let lo = 0, hi = 1075;
+          while (hi - lo > 4) {
+            const mid = Math.floor((lo + hi) / 2);
+            await setFooterSpacer(mid);
+            if (countPdfPages(await reportPage.pdf(pdfOptions)) > basePageCount) hi = mid;
+            else lo = mid;
+          }
+          await setFooterSpacer(lo);
+        } catch (spacerErr) {
+          // Non-critical: fall back to the footer flowing right after the content
+          console.warn('⚠️ Footer positioning failed (non-critical):', spacerErr.message);
+          await setFooterSpacer(0).catch(() => {});
+        }
+        return await reportPage.pdf(pdfOptions);
+      } finally {
+        await reportPage.close().catch(() => {});
       }
-      await setFooterSpacer(lo);
-    } catch (spacerErr) {
-      // Non-critical: fall back to the footer flowing right after the content
-      console.warn('⚠️ Footer positioning failed (non-critical):', spacerErr.message);
-      await setFooterSpacer(0).catch(() => {});
     }
-    await reportPage.pdf({ path: 'playwright-report/visual-audit-diff.pdf', ...pdfOptions });
 
-    await reportPage.close();
-    console.log('📸 Visual report saved as visual-audit-diff.pdf');
+    const pdfBuffer = await renderReportPdf(reportHtml);
+
+    fs.writeFileSync('playwright-report/visual-audit-diff.pdf', pdfBuffer);
+    console.log(`📸 Visual report saved as visual-audit-diff.pdf (${(pdfBuffer.length / 1048576).toFixed(2)}MB)`);
 
     const finalResults = {
       trueMatchScore,
