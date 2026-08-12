@@ -992,9 +992,10 @@ async function runAudit() {
       shotPage = page;
     }
 
-    // Audit screenshots are JPEG (see the capture call below for why). 85 is the
-    // point where compression artifacts stop being visible on the marker edges.
-    const SHOT_QUALITY = 85;
+    // Audit screenshots are JPEG (see the capture call below for why). 90 keeps the
+    // marker edges and small text crisp; the screenshot is now a minority of the PDF,
+    // so the extra bytes over a lower setting are worth the clarity.
+    const SHOT_QUALITY = 90;
     const maxScreenshots = Math.min(2, Math.ceil(allIssues.length / 8));
     const issuesPerScreen = Math.ceil(allIssues.length / Math.max(1, maxScreenshots));
     console.log(`📸 Generating ${maxScreenshots} screenshot(s)...`);
@@ -1116,8 +1117,7 @@ async function runAudit() {
         : `display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;`;
 
       return `
-      <div class="issue-card" style="position:relative;overflow:hidden;display:flex;gap:16px;padding:20px 24px;margin:0 0 16px;background:#fff;border-radius:16px;box-shadow:0 4px 20px -4px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.02);border:1px solid #f1f5f9;break-inside:avoid;page-break-inside:avoid;">
-        <div style="position:absolute;top:0;left:0;width:4px;height:100%;background:${color};"></div>
+      <div class="issue-card" style="display:flex;align-items:center;gap:16px;padding:20px 24px;margin:0 0 16px;background:#fff;border-radius:16px;box-shadow:0 4px 20px -4px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.02);border:1px solid #f1f5f9;break-inside:avoid;page-break-inside:avoid;">
         <div style="min-width:34px;height:34px;background:rgba(${r},${g},${b},0.12);color:${color};border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">${issue.issueNum}</div>
         <div style="flex:1;">
           <div style="font-weight:700;font-size:16px;color:#0f1b35;line-height:1.2;letter-spacing:-0.2px;">${issue.element}</div>
