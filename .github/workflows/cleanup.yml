@@ -1,5 +1,8 @@
 name: 🧹 Weekly Storage Cleanup
 
+# Deletes audit-results files OLDER THAN 30 DAYS (it used to delete every file, so a
+# report made on Saturday night was gone within hours). Web report images in the
+# `reports` bucket are removed by the worker's daily cron instead (report/routes.js).
 on:
   schedule:
     - cron: '0 0 * * 0'
@@ -9,32 +12,43 @@ jobs:
   cleanup-storage:
     runs-on: ubuntu-latest
     steps:
-      - name: Purge all files in audit-results bucket
+      - name: Purge audit-results files older than 30 days
         run: |
-          # 1. 🚨 THE FIX: POST request with prefix payload
-          RESPONSE=$(curl -s -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/list/audit-results" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{"prefix": ""}')
-
-          echo "Response from Supabase: $RESPONSE"
-
-          # 2. Check for API errors before using jq
-          if [[ "$RESPONSE" == *"error"* ]]; then
-            echo "❌ ERROR: Supabase returned an error: $RESPONSE"
-            exit 1
-          fi
-
-          # 3. Safe extraction of filenames
-          FILE_NAMES=$(echo "$RESPONSE" | jq -c '[.[] | .name] | select(. != null)')
-
-          # 4. Conditional Delete
-          if [ "$FILE_NAMES" != "[]" ] && [ "$FILE_NAMES" != "" ]; then
-            echo "Deleting: $FILE_NAMES"
-            curl -s -X DELETE "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results" \
+          CUTOFF=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%S)
+          echo "Deleting files created before $CUTOFF (UTC)"
+          OFFSET=0
+          TOTAL=0
+          while :; do
+            # The list API returns at most `limit` objects per call: page through all of them
+            RESPONSE=$(curl -s -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/list/audit-results" \
               -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
               -H "Content-Type: application/json" \
-              -d "{\"prefixes\": $FILE_NAMES}"
-          else
-            echo "Nothing to delete. ✅"
-          fi
+              -d "{\"prefix\": \"\", \"limit\": 1000, \"offset\": $OFFSET, \"sortBy\": {\"column\": \"created_at\", \"order\": \"asc\"}}")
+
+            if ! echo "$RESPONSE" | jq -e 'type == "array"' > /dev/null; then
+              echo "❌ ERROR: Supabase returned: $RESPONSE"
+              exit 1
+            fi
+
+            COUNT=$(echo "$RESPONSE" | jq 'length')
+            # Only real files (folders have no id) created before the cutoff
+            OLD=$(echo "$RESPONSE" | jq -c --arg cutoff "$CUTOFF" \
+              '[.[] | select(.id != null and .created_at != null and (.created_at | sub("\\.[0-9]+"; "") | sub("Z$"; "") | sub("\\+00:00$"; "")) < $cutoff) | .name]')
+            N=$(echo "$OLD" | jq 'length')
+
+            if [ "$N" -gt 0 ]; then
+              echo "Deleting $N file(s)"
+              curl -s -X DELETE "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results" \
+                -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+                -H "Content-Type: application/json" \
+                -d "{\"prefixes\": $OLD}" > /dev/null
+              TOTAL=$((TOTAL + N))
+            fi
+
+            # Sorted oldest first: once a page has nothing old left, nothing later will
+            [ "$COUNT" -lt 1000 ] && break
+            [ "$N" -lt "$COUNT" ] && break
+            # Deleted files shift the next page down, so only advance by what is left
+            OFFSET=$((OFFSET + COUNT - N))
+          done
+          echo "Done. Deleted $TOTAL file(s) older than 30 days. ✅"
