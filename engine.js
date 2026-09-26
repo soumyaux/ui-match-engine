@@ -13,6 +13,51 @@ if (!fs.existsSync('playwright-report')) {
   fs.mkdirSync('playwright-report');
 }
 
+// Bilinear resample of an RGBA PNG to `targetW` wide (height keeps the aspect ratio).
+// Older plugins export the frame at 1440px whatever its real width, while the live page
+// is rendered at the frame's width: comparing those pixel-for-pixel compares different
+// places on the page.
+function resizePng(src, targetW) {
+  const scale = src.width / targetW;
+  const targetH = Math.max(1, Math.round(src.height / scale));
+  const out = new PNG({ width: targetW, height: targetH });
+  const sd = src.data, od = out.data, sw = src.width, sh = src.height;
+  for (let y = 0; y < targetH; y++) {
+    const fy = Math.min(sh - 1, Math.max(0, (y + 0.5) * scale - 0.5));
+    const y0 = Math.floor(fy), y1 = Math.min(sh - 1, y0 + 1), wy = fy - y0;
+    for (let x = 0; x < targetW; x++) {
+      const fx = Math.min(sw - 1, Math.max(0, (x + 0.5) * scale - 0.5));
+      const x0 = Math.floor(fx), x1 = Math.min(sw - 1, x0 + 1), wx = fx - x0;
+      const i00 = (y0 * sw + x0) << 2, i01 = (y0 * sw + x1) << 2, i10 = (y1 * sw + x0) << 2, i11 = (y1 * sw + x1) << 2;
+      const o = (y * targetW + x) << 2;
+      for (let c = 0; c < 4; c++) {
+        const top = sd[i00 + c] * (1 - wx) + sd[i01 + c] * wx;
+        const bot = sd[i10 + c] * (1 - wx) + sd[i11 + c] * wx;
+        od[o + c] = Math.round(top * (1 - wy) + bot * wy);
+      }
+    }
+  }
+  return out;
+}
+
+// Severity/category for issues the probe didn't classify (older extension versions send
+// label-only results): derived from the labels, so every issue in the v2 output has both.
+const LABEL_CATEGORY = {
+  'Missing Element': 'layout', 'Width': 'layout', 'Height': 'layout', 'Position': 'layout',
+  'Font Size': 'typography', 'Font Family': 'typography', 'Font Weight': 'typography', 'Line Height': 'typography',
+  'Letter Spacing': 'typography', 'Text Align': 'typography', 'Text Decoration': 'typography', 'Text Transform': 'typography',
+  'Text Color': 'colour', 'Background Color': 'colour', 'Border Color': 'colour', 'Opacity': 'colour',
+  'Padding Top': 'spacing', 'Padding Right': 'spacing', 'Padding Bottom': 'spacing', 'Padding Left': 'spacing', 'Gap': 'spacing',
+  'Text Content': 'text', 'Border Radius': 'details', 'Border Width': 'details', 'Shadow': 'details',
+};
+function classifyLegacy(issue) {
+  if (issue.type === 'MAJOR_VISUAL') return { category: 'visual', severity: 'medium' };
+  if (issue.type === 'TOKEN_UNCONNECTED') return { category: 'code-tokens', severity: 'low' };
+  if (issue.element === 'Missing Element') return { category: 'layout', severity: 'high' };
+  const first = String((issue.details || [])[0] || '').replace(/^~/, '').split(':')[0];
+  return { category: LABEL_CATEGORY[first] || 'details', severity: first === 'Font Family' ? 'high' : 'medium' };
+}
+
 // ──────────────────────────────────────────────
 // MAIN AUDIT
 // ──────────────────────────────────────────────
@@ -403,6 +448,8 @@ async function runAudit() {
     }
 
     let visualIssues = [];
+    let figmaPngForReport = null; // the Figma frame at page scale - served by the web report
+    let diffPngForReport = null;  // pixelmatch difference image (red = differs)
     let pixelMatchPercent = 100; // default if no Figma image
     let contentMatchPercent = 100;
     const figmaImagePath = process.env.FIGMA_IMAGE;
@@ -417,7 +464,12 @@ async function runAudit() {
       console.log('🖼️ Running Pixelmatch Bounding Box Clustering...');
       try {
 
-        const imgFigma = PNG.sync.read(fs.readFileSync(figmaImagePath));
+        let imgFigma = PNG.sync.read(fs.readFileSync(figmaImagePath));
+        if (imgFigma.width !== frameWidth) {
+          console.log(`📐 Figma PNG is ${imgFigma.width}px wide, the frame is ${frameWidth}px: resampling to the frame's size.`);
+          imgFigma = resizePng(imgFigma, frameWidth);
+        }
+        figmaPngForReport = PNG.sync.write(imgFigma);
         const imgLive = PNG.sync.read(liveScreenshotBuffer);
 
         const width = Math.min(imgFigma.width, imgLive.width);
@@ -498,6 +550,7 @@ async function runAudit() {
         const mismatchedPixels = pixelmatch(cropFigma, cropLive, rawDiff.data, width, height, { threshold: 0.15 });
         const totalPixels = width * height;
         pixelMatchPercent = Math.round(((totalPixels - mismatchedPixels) / totalPixels) * 100);
+        try { diffPngForReport = PNG.sync.write(rawDiff); } catch (e) { console.warn('⚠️ diff image not saved (non-critical):', e.message); }
         console.log(`🔍 Pixelmatch: ${mismatchedPixels} differing pixels out of ${totalPixels} (${pixelMatchPercent}% match).`);
 
         // --- CONTENT-AWARE BLOCK-BASED VISUAL SCORE ---
@@ -799,6 +852,13 @@ async function runAudit() {
           return !tIsDecor;
         });
 
+        // Text layers the probe measured and found exactly right, words included: a pixel
+        // difference on them is Figma vs browser font rendering, not a design difference
+        const verifiedText = new Set(tokenReport
+          .filter(r => (r.type === 'TOKEN_PASS' || r.type === 'TOKEN_UNCONNECTED') && r.figmaNodeId)
+          .map(r => r.figmaNodeId));
+        let renderingOnly = 0;
+
         for (const box of finalClusters) {
           let bestToken = null;
           let bestIoU = 0;
@@ -841,8 +901,11 @@ async function runAudit() {
           const bestTh = bestToken ? (bestToken.h || 0) : 0;
           const centerInToken = clusterCX >= bestTx && clusterCX <= bestTx + bestTw &&
                                 clusterCY >= bestTy && clusterCY <= bestTy + bestTh;
+          const verified = bestToken && bestToken.id && typeof bestToken.text === 'string' && verifiedText.has(bestToken.id);
+          if (verified && (bestIoU > 0.25 || (bestIoU > 0.15 && centerInToken))) { renderingOnly++; continue; }
           if (bestToken && (bestIoU > 0.25 || (bestIoU > 0.15 && centerInToken))) {
-            figmaMatchedClusters.push(box);
+            figmaMatchedClusters.push(Object.assign({}, box, { figmaNodeId: bestToken.id || null, section: bestToken.section || null,
+              name: bestToken.inst || bestToken.name || null, iou: Math.round(bestIoU * 100) / 100 }));
             // Use the Figma layer name (last 2 path segments for better context)
             const rawName = bestToken.name || 'unknown';
             const segments = rawName.split('/').map(s => s.trim()).filter(Boolean);
@@ -853,15 +916,18 @@ async function runAudit() {
           }
         }
 
-        console.log(`📦 Matched ${figmaMatchedClusters.length} visual clusters to Figma tokens (from ${finalClusters.length} candidates).`);
+        console.log(`📦 Matched ${figmaMatchedClusters.length} visual clusters to Figma tokens (from ${finalClusters.length} candidates${renderingOnly ? `; ${renderingOnly} on verified text skipped as font rendering` : ''}).`);
 
         // Build visual issues directly from Figma-matched clusters (no AI needed)
         for (let i = 0; i < figmaMatchedClusters.length; i++) {
+            const c = figmaMatchedClusters[i];
             visualIssues.push({
                 type: 'MAJOR_VISUAL',
                 element: figmaMatchedNames[i] || 'Component',
                 details: ['Visual difference detected.'],
-                rect: figmaMatchedClusters[i]
+                rect: { x: c.x, y: c.y, w: c.w, h: c.h },
+                name: c.name, section: c.section, figmaNodeId: c.figmaNodeId,
+                category: 'visual', severity: 'medium', checks: []
             });
         }
 
@@ -907,12 +973,22 @@ async function runAudit() {
       return true;
     });
 
-    let allIssues = [...tokenMinor, ...tokenLayout, ...filteredVisual, ...tokenUnconnected];
-    allIssues.sort((a, b) => {
+    // "Code tokens" notes (values right, but fixed values instead of CSS variables) are
+    // not mismatches: they stay in the data, in their own category that the report hides
+    // by default, and are neither counted nor listed in the PDF.
+    const byPosition = (a, b) => {
         if (Math.abs(a.rect.y - b.rect.y) > 10) return a.rect.y - b.rect.y;
         return a.rect.x - b.rect.x;
-    });
+    };
+    let allIssues = [...tokenMinor, ...tokenLayout, ...filteredVisual];
+    allIssues.sort(byPosition);
     allIssues.forEach((issue, index) => { issue.issueNum = index + 1; });
+    const codeTokenNotes = [...tokenUnconnected].sort(byPosition);
+    // Stable ids + a category/severity on every issue (older extensions send labels only)
+    [...allIssues, ...codeTokenNotes].forEach((issue, index) => {
+        issue.id = `i-${index + 1}`;
+        if (!issue.category || !issue.severity) Object.assign(issue, classifyLegacy(issue));
+    });
 
     const visualMatchScore = contentMatchPercent;
     let totalErrorsFound = 0;
@@ -991,6 +1067,15 @@ async function runAudit() {
       await page.waitForTimeout(50);
       shotPage = page;
     }
+
+    // Clean live screenshot (no markers) for the web report's Visual Compare
+    let liveJpgForReport = null;
+    try {
+      if (captured) {
+        await shotPage.setContent(`<!DOCTYPE html><html><head><style>*{margin:0;padding:0;box-sizing:border-box;}</style></head><body style="margin:0;"><img src="data:image/png;base64,${cleanB64}" style="display:block;width:${frameWidth}px;height:auto;" /></body></html>`, { waitUntil: 'load' });
+      }
+      liveJpgForReport = await shotPage.screenshot({ fullPage: true, type: 'jpeg', quality: 85 });
+    } catch (e) { console.warn('⚠️ clean live screenshot not saved (non-critical):', e.message); }
 
     // Audit screenshots are JPEG (see the capture call below for why). 90 keeps the
     // marker edges and small text crisp; the screenshot is now a minority of the PDF,
@@ -1278,13 +1363,34 @@ async function runAudit() {
     fs.writeFileSync('playwright-report/visual-audit-diff.pdf', pdfBuffer);
     console.log(`📸 Visual report saved as visual-audit-diff.pdf (${(pdfBuffer.length / 1048576).toFixed(2)}MB)`);
 
+    // Images for the web report, uploaded next to the PDF by audit.yml
+    const images = {};
+    const saveImage = (name, buf) => {
+      if (!buf) return;
+      try { fs.writeFileSync(`playwright-report/${name}`, buf); images[name.split('.')[0]] = name; }
+      catch (e) { console.warn(`⚠️ ${name} not saved (non-critical):`, e.message); }
+    };
+    saveImage('live.jpg', liveJpgForReport);
+    saveImage('figma.png', figmaPngForReport);
+    saveImage('diff.png', diffPngForReport);
+
     const finalResults = {
+      // v2: issues carry id, category, severity, locators and checks[] with design/live
+      // values. v1 readers keep using the fields below unchanged.
+      schemaVersion: 2,
       trueMatchScore,
       visualMatchScore,
       rawVisualScore: pixelMatchPercent,
       totalIssues: allIssues.length,
       wrongPageBanner,                       // non-empty when >=2 signals say wrong page
       wrongPageSignals,                      // {gemini, tokens, visual} - for the dashboard
+      frame: { name: frameName, width: frameWidth, height: frameHeight },
+      url: targetUrl,
+      captured,
+      auditedAt: new Date().toISOString(),
+      images,                                // {live, figma, diff} file names, when produced
+      issues: [...allIssues, ...codeTokenNotes], // what the report shows (notes: category code-tokens)
+      visualClusters: filteredVisual.map(v => ({ id: v.id, rect: v.rect, name: v.name, figmaNodeId: v.figmaNodeId, section: v.section })),
       tokens: tokenReport
     };
     fs.writeFileSync('playwright-report/audit-results.json', JSON.stringify(finalResults, null, 2));
