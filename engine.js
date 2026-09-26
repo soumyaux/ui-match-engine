@@ -67,7 +67,7 @@ async function runAudit() {
     const targetUrl = process.env.TARGET_URL;
     // Identity + worker origin - used to embed a per-scan feedback link in the PDF.
     const scanId = process.env.SCAN_ID || '';
-    const workerOrigin = (process.env.WORKER_ORIGIN || 'https://ui-match-proxy.soumyasahoo473.workers.dev').replace(/\/+$/, '');
+    const workerOrigin = (process.env.WORKER_ORIGIN || 'https://uimatch.pages.dev').replace(/\/+$/, '');
     // Corroboration signals for "is this the wrong page?" - collected through the run and
     // evaluated ONCE at report time. We no longer hard-abort on any single signal; a low
     // score is itself the report's headline. Only a 2-of-3 agreement raises a warning
