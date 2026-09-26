@@ -30,6 +30,10 @@ on:
         description: "Browser-capture artifact URL prefix (empty = normal cloud audit)"
         required: false
         default: ""
+      env:
+        description: "production | staging - picks the GitHub Environment (and its secrets)"
+        required: false
+        default: "production"
 
 permissions:
   contents: read
@@ -38,6 +42,9 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Staging runs use the `staging` Environment's secrets (its own Supabase project);
+    # without Environment secrets the repository secrets apply, as before
+    environment: ${{ github.event.inputs.env || 'production' }}
 
     steps:
       - uses: actions/checkout@v5
@@ -138,6 +145,31 @@ jobs:
           else
             echo "No PDF found"
           fi
+
+      # Web report data (v2): images to the PRIVATE `reports` bucket at <scan_id>/, and the
+      # issue list (audit-results.json minus the raw probe output) into scan_history.results.
+      # Runs before "Mark Completed" so a finished scan always has its report data. Never
+      # fails the audit: before schema.sql §9 exists the PATCH is rejected and ignored.
+      - name: 🧾 Save Web Report Data
+        if: ${{ success() && github.event.inputs.scan_id != '' }}
+        continue-on-error: true
+        run: |
+          SID="${{ github.event.inputs.scan_id }}"
+          for f in live.jpg figma.png diff.png; do
+            [ -f "playwright-report/$f" ] || continue
+            case "$f" in *.jpg) CT=image/jpeg ;; *) CT=image/png ;; esac
+            curl -sfX POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/reports/${SID}/${f}" \
+              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+              -H "Content-Type: $CT" -H "x-upsert: true" \
+              --data-binary @"playwright-report/$f" > /dev/null && echo "Uploaded $f" || echo "⚠️ $f upload failed"
+          done
+          jq -c '{results: del(.tokens), results_version: (.schemaVersion // 1)}' playwright-report/audit-results.json > results-patch.json
+          curl -sfX PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.${SID}" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            --data-binary @results-patch.json && echo "Results saved ($(wc -c < results-patch.json) bytes)" || echo "⚠️ results not saved (schema.sql §9 not applied yet?)"
 
       - name: ✅ Mark Completed
         if: ${{ success() && github.event.inputs.scan_id != '' }}
