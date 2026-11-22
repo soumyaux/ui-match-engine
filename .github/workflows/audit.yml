@@ -43,7 +43,8 @@ permissions:
 
 jobs:
   audit:
-    runs-on: ubuntu-latest
+    # Pinned: Playwright can't install Chromium on ubuntu-26.04 (ubuntu-latest) yet
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Staging runs use the `staging` Environment's secrets (its own Supabase project);
     # without Environment secrets the repository secrets apply, as before
@@ -92,6 +93,7 @@ jobs:
             ${{ runner.os }}-deps-v2-
 
       - name: Install Dependencies + Browser
+        id: install
         if: steps.cache-deps.outputs.cache-hit != 'true'
         run: |
           npm ci
@@ -164,6 +166,7 @@ jobs:
         if: ${{ always() && github.event.inputs.scan_id != '' }}
         env:
           OUTCOME: ${{ job.status }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
           SID: ${{ github.event.inputs.scan_id }}
           WORKER_URL: ${{ secrets.UIMATCH_WORKER_URL }}
           FINISH_SECRET: ${{ secrets.FINISH_SECRET }}
@@ -180,6 +183,8 @@ jobs:
             ERROR_MSG="Audit failed unexpectedly."
             [ "$OUTCOME" = "cancelled" ] && ERROR_MSG="The audit took too long and was stopped. Please try again."
             [ -f "playwright-report/error-log.txt" ] && ERROR_MSG=$(head -c 500 playwright-report/error-log.txt)
+            # The engine never ran: say so, instead of blaming the website
+            [ "$INSTALL_OUTCOME" = "failure" ] && ERROR_MSG="Audit setup failed (browser install) - not the website. Check the engine run on GitHub."
             jq -nc --arg e "$ERROR_MSG" '{status: "failed", error_message: $e}' > finish.json
             jq -c '{audit_status: .status, error_message}' finish.json > direct.json
             # Show the reason on the run page + as an annotation, so GitHub's failure email
