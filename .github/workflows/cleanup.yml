@@ -10,7 +10,8 @@ on:
 
 jobs:
   cleanup-storage:
-    runs-on: ubuntu-latest
+    # Pinned: Playwright can't install Chromium on ubuntu-26.04 (ubuntu-latest) yet
+    runs-on: ubuntu-24.04
     steps:
       - name: Purge audit-results files older than 30 days
         run: |
