@@ -94,7 +94,7 @@ jobs:
       - name: Install Dependencies + Browser
         if: steps.cache-deps.outputs.cache-hit != 'true'
         run: |
-          npm install playwright pixelmatch pngjs
+          npm ci
           npx playwright install --with-deps chromium
 
       - name: 🔍 Run Audit Engine
@@ -103,18 +103,20 @@ jobs:
           # TARGET_URL, FRAME_NAME and the captured-mode files come from 📥 Download Inputs
           TOKENS_FILE: tokens.json
           FIGMA_IMAGE: figma-frame.png
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SCAN_ID: ${{ github.event.inputs.scan_id }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
       - name: 📸 Upload PDF Report to Supabase
         if: always()
+        env:
+          SB_URL: ${{ secrets.SUPABASE_URL }}
+          SB_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           FINAL_ID="${SESSION_ID:-manual_run}"
           if [ -f "playwright-report/visual-audit-diff.pdf" ]; then
-            curl -sX POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/${FINAL_ID}.pdf" \
-              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            curl -sX POST "${SB_URL}/storage/v1/object/audit-results/${FINAL_ID}.pdf" \
+              -H "Authorization: Bearer $SB_KEY" \
               -H "Content-Type: application/pdf" \
               -H "x-upsert: true" \
               --data-binary @"playwright-report/visual-audit-diff.pdf"
@@ -130,20 +132,23 @@ jobs:
       - name: 🧾 Save Web Report Data
         if: ${{ success() && github.event.inputs.scan_id != '' }}
         continue-on-error: true
+        env:
+          SID: ${{ github.event.inputs.scan_id }}
+          SB_URL: ${{ secrets.SUPABASE_URL }}
+          SB_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          SID="${{ github.event.inputs.scan_id }}"
           for f in live.jpg figma.png diff.png; do
             [ -f "playwright-report/$f" ] || continue
             case "$f" in *.jpg) CT=image/jpeg ;; *) CT=image/png ;; esac
-            curl -sfX POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/reports/${SID}/${f}" \
-              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            curl -sfX POST "${SB_URL}/storage/v1/object/reports/${SID}/${f}" \
+              -H "Authorization: Bearer $SB_KEY" \
               -H "Content-Type: $CT" -H "x-upsert: true" \
               --data-binary @"playwright-report/$f" > /dev/null && echo "Uploaded $f" || echo "⚠️ $f upload failed"
           done
           jq -c '{results: del(.tokens), results_version: (.schemaVersion // 1)}' playwright-report/audit-results.json > results-patch.json
-          curl -sfX PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.${SID}" \
-            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+          curl -sfX PATCH "${SB_URL}/rest/v1/scan_history?id=eq.${SID}" \
+            -H "apikey: $SB_KEY" \
+            -H "Authorization: Bearer $SB_KEY" \
             -H "Content-Type: application/json" \
             -H "Prefer: return=minimal" \
             --data-binary @results-patch.json && echo "Results saved ($(wc -c < results-patch.json) bytes)" || echo "⚠️ results not saved (schema.sql §9 not applied yet?)"

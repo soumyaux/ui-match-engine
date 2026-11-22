@@ -78,7 +78,7 @@ async function runAudit() {
     // score is itself the report's headline. Only a 2-of-3 agreement raises a warning
     // banner, and the report is ALWAYS produced. (Genuine "can't audit" cases - page won't
     // load, login wall, dead URL - still exit, because there is no data to report.)
-    const wrongPageSignals = { gemini: false, tokens: false, visual: false };
+    const wrongPageSignals = { tokens: false, visual: false };
     let visualAlignConfidence = null; // set during visual scoring; 0..1, null = couldn't compute/register
     let wrongPageBanner = '';        // non-empty → shown atop the report
     let figmaTokens = [];
@@ -319,73 +319,6 @@ async function runAudit() {
       }
     }
     } // end if (!captured) - live navigation, normalization & auth-wall detection
-
-    // ── GEMINI VISION PAGE MATCH CHECK ──
-    // Runs BEFORE token validation - catches wrong pages early, saves ~5s on mismatches.
-    // Uses a quick viewport screenshot (no blackout, no fullPage) for speed.
-    const geminiKey = process.env.GEMINI_API_KEY;
-    const figmaImgPath = process.env.FIGMA_IMAGE;
-    const viewportPath = process.env.LIVE_VIEWPORT;
-    // In captured mode the viewport screenshot is supplied by the extension; skip the
-    // check if it wasn't provided rather than crashing on the missing live page.
-    const canGemini = geminiKey && figmaImgPath && fs.existsSync(figmaImgPath)
-      && (!captured || (viewportPath && fs.existsSync(viewportPath)));
-    if (canGemini) {
-      try {
-        console.log('🤖 Running Gemini Vision page match check...');
-
-        // Quick viewport-only screenshot (no blackout applied yet - real page)
-        const geminiLiveBuffer = captured ? fs.readFileSync(viewportPath) : await page.screenshot({ fullPage: false });
-
-        // Crop Figma PNG to viewport height using bulk TypedArray copy (faster than pixel loop)
-        const figmaFull = PNG.sync.read(fs.readFileSync(figmaImgPath));
-        const cropH = Math.min(figmaFull.height, frameHeight);
-        const figmaCropped = new PNG({ width: figmaFull.width, height: cropH });
-        figmaCropped.data.set(figmaFull.data.subarray(0, figmaFull.width * cropH * 4));
-        const figmaB64 = PNG.sync.write(figmaCropped).toString('base64');
-        const liveB64 = geminiLiveBuffer.toString('base64');
-
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${geminiKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [
-                  { text: 'I have two webpage screenshots for a design audit. The first is a Figma design mockup. The second is a live website screenshot. Are these showing the same web page or very similar UI layout? Focus ONLY on page structure, navigation placement, section layout, and overall composition - ignore image content, placeholder text, and real data differences. Answer only YES or NO.' },
-                  { inline_data: { mime_type: 'image/png', data: figmaB64 } },
-                  { inline_data: { mime_type: 'image/png', data: liveB64 } }
-                ]
-              }],
-              generationConfig: { maxOutputTokens: 5 }
-            }),
-            // NEW generous safety net (no timeout existed before): a hung Gemini call
-            // used to stall the job until GitHub's 10-min cancel (audit.yml now marks a
-            // cancelled job failed, but the audit is still lost).
-            // On abort, the catch below logs a warning and the audit CONTINUES.
-            signal: AbortSignal.timeout(60000)
-          }
-        );
-
-        if (geminiRes.ok) {
-          const geminiJson = await geminiRes.json();
-          const answer = (geminiJson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim().toUpperCase();
-          console.log(`🤖 Gemini page match: ${answer}`);
-
-          if (answer.startsWith('NO')) {
-            // Gemini's vote that this may be the wrong page. Recorded, not fatal - the
-            // corroborated decision (>=2 of 3 signals) is made at report time.
-            wrongPageSignals.gemini = true;
-            console.log('⚠️ Gemini signal: page may not match the Figma design.');
-          }
-        } else {
-          console.warn(`⚠️ Gemini API returned ${geminiRes.status} - skipping check.`);
-        }
-      } catch (geminiErr) {
-        console.warn('⚠️ Gemini Vision check failed (non-critical):', geminiErr.message);
-      }
-    }
 
     // ══════════════════════════════════════════
     // PHASE 1: TOKEN CSS VALIDATION
@@ -1041,14 +974,14 @@ async function runAudit() {
 
     // === CORROBORATED WRONG-PAGE BANNER (replaces the 4 hard aborts) ===
     // We never abort on a single signal - a low score IS the report's headline. Only when
-    // >=2 of the 3 independent signals (Gemini vision, token-found ratio, visual alignment)
+    // both independent signals (token-found ratio, visual alignment)
     // agree does the report open with a warning. The audit always completes.
-    const wrongVotes = (wrongPageSignals.gemini ? 1 : 0) + (wrongPageSignals.tokens ? 1 : 0) + (wrongPageSignals.visual ? 1 : 0);
+    const wrongVotes = (wrongPageSignals.tokens ? 1 : 0) + (wrongPageSignals.visual ? 1 : 0);
     if (wrongVotes >= 2) {
       wrongPageBanner = 'This page may not match your Figma design - please check that the URL matches your selected frame.';
-      console.log(`⚠️ LOW MATCH corroborated by ${wrongVotes}/3 signals (gemini:${wrongPageSignals.gemini} tokens:${wrongPageSignals.tokens} visual:${wrongPageSignals.visual}) - producing report with a warning banner.`);
+      console.log(`⚠️ LOW MATCH corroborated by ${wrongVotes}/2 signals (tokens:${wrongPageSignals.tokens} visual:${wrongPageSignals.visual}) - producing report with a warning banner.`);
     } else if (wrongVotes === 1) {
-      console.log(`ℹ️ One wrong-page signal fired (gemini:${wrongPageSignals.gemini} tokens:${wrongPageSignals.tokens} visual:${wrongPageSignals.visual}) - not enough to warn; report produced normally.`);
+      console.log(`ℹ️ One wrong-page signal fired (tokens:${wrongPageSignals.tokens} visual:${wrongPageSignals.visual}) - not enough to warn; report produced normally.`);
     }
 
     // === DYNAMIC MULTI-SCREENSHOT LOGIC ===
@@ -1390,7 +1323,7 @@ async function runAudit() {
       rawVisualScore: pixelMatchPercent,
       totalIssues: allIssues.length,
       wrongPageBanner,                       // non-empty when >=2 signals say wrong page
-      wrongPageSignals,                      // {gemini, tokens, visual} - for the dashboard
+      wrongPageSignals,                      // {tokens, visual} - for the dashboard
       frame: { name: frameName, width: frameWidth, height: frameHeight },
       url: targetUrl,
       captured,

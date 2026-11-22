@@ -1,0 +1,30 @@
+{
+  "name": "UI-Match",
+  "version": "1.0.0",
+  "description": "Your Figma Plugin",
+  "main": "code.js",
+  "author": "",
+  "license": "",
+  "scripts": {
+    "test": "node test-engine.js && npm run test:accuracy",
+    "sync-probe": "cp probe.js extension/probe.js",
+    "check-probe": "node -e \"const fs=require('fs');if(fs.readFileSync('probe.js','utf8')!==fs.readFileSync('extension/probe.js','utf8')){console.error('\\u274c probe.js and extension/probe.js differ \\u2014 run: npm run sync-probe');process.exit(1)}console.log('\\u2713 probe.js in sync with extension')\"",
+    "sync-glass": "node qa/sync-glass.mjs",
+    "check-glass": "node qa/sync-glass.mjs --check",
+    "pretest": "npm run check-probe && npm run check-glass",
+    "pack-extension": "cp probe.js extension/probe.js && rm -f ui-match-extension.zip && cd extension && zip -r ../ui-match-extension.zip manifest.json background.js popup.html popup.js glass.js probe.js icons -x '*.DS_Store'",
+    "test:accuracy": "node planning/tools/accuracy-test.js && node planning/tools/real-figma-test/run.js && node planning/tools/real-figma-test/grade.js --assert",
+    "test:worker": "node qa/test-worker.mjs",
+    "test:retention": "node qa/test-worker.mjs --only=retention",
+    "test:ui": "node qa/make-fixtures.mjs && node qa/snap.mjs",
+    "test:e2e": "node qa/make-fixtures.mjs && node qa/e2e.mjs && node qa/e2e-extension.mjs",
+    "qa": "node qa/make-fixtures.mjs && node qa/serve.mjs",
+    "deploy:worker": "npx -y wrangler@4 deploy",
+    "deploy:worker:staging": "npx -y wrangler@4 deploy --env staging"
+  },
+  "dependencies": {
+    "pixelmatch": "^7.1.0",
+    "playwright": "^1.60.0",
+    "pngjs": "^7.0.0"
+  }
+}
