@@ -121,9 +121,12 @@ function probePage(tokens) {
           let sel = n.tagName.toLowerCase();
           const cls = [...n.classList].filter(c => /^[A-Za-z_-][\w-]*$/.test(c) && c.length < 30).slice(0, 2);
           if (cls.length) sel += '.' + cls.join('.');
-          else if (n.parentElement) {
+          if (n.parentElement) {
+            // Siblings that look the same (four div.stat cards) get their position too, so the
+            // selector finds this one element and not the first of them
             const same = [...n.parentElement.children].filter(c => c.tagName === n.tagName);
-            if (same.length > 1) sel += `:nth-of-type(${same.indexOf(n) + 1})`;
+            const twins = cls.length ? same.filter(c => cls.every(k => c.classList.contains(k))) : same;
+            if (twins.length > 1) sel += `:nth-of-type(${same.indexOf(n) + 1})`;
           }
           parts.unshift(sel);
         }

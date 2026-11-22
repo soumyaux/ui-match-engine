@@ -113,7 +113,9 @@ async function runAudit() {
     // ══════════════════════════════════════════
     // Never log the website: the engine repo's run logs are public
     console.log('🌸 Starting Visual Engine Audit');
-    browser = await chromium.launch({ headless: true });
+    // Linux Chrome rounds each letter's advance to whole pixels, so text runs ~3% wider than
+    // in Figma or on a Mac and lines wrap early. No hinting = fractional advances, Figma-like.
+    browser = await chromium.launch({ headless: true, args: ['--font-render-hinting=none'] });
 
     // ── CAPTURED MODE ──
     // When the UI Match browser extension has already rendered, probed and
