@@ -58,6 +58,11 @@ function classifyLegacy(issue) {
   return { category: LABEL_CATEGORY[first] || 'details', severity: first === 'Font Family' ? 'high' : 'medium' };
 }
 
+// The engine repo is public, so are its run logs: an error printed there must not name
+// the user's page (Playwright's messages and call logs do). The full message still goes
+// to error-log.txt, which only the user sees.
+const noUrls = (v) => String(v).replace(/\b(?:https?|wss?|file):\/\/[^\s"'`<>)]+/gi, '<url>').slice(0, 4000);
+
 // ──────────────────────────────────────────────
 // MAIN AUDIT
 // ──────────────────────────────────────────────
@@ -106,7 +111,8 @@ async function runAudit() {
     // ══════════════════════════════════════════
     // PHASE 0: Navigation
     // ══════════════════════════════════════════
-    console.log(`🌸 Starting Visual Engine Audit for: ${targetUrl}`);
+    // Never log the website: the engine repo's run logs are public
+    console.log('🌸 Starting Visual Engine Audit');
     browser = await chromium.launch({ headless: true });
 
     // ── CAPTURED MODE ──
@@ -137,7 +143,7 @@ async function runAudit() {
     console.log(`📐 Viewport set to ${frameWidth}×${frameHeight} @1x (matching Figma frame)`);
 
     try {
-      console.log(`🌍 Navigating to ${targetUrl}...`);
+      console.log('🌍 Navigating to the page...');
 
       // TIER 1: domcontentloaded @ 60s
       // Works for most sites. Fires as soon as HTML is parsed.
@@ -182,7 +188,8 @@ async function runAudit() {
         console.warn('⚠️ networkidle timed out - proceeding.');
       });
     } catch (navError) {
-      console.error(`❌ Failed to reach ${targetUrl}. Details: ${navError.message}`);
+      // Playwright's message names the page; that goes to the user's report, not the log
+      console.error(`❌ Failed to reach the page (${noUrls(navError.message)})`);
       fs.writeFileSync('playwright-report/error-log.txt', `Navigation failed: ${navError.message}`);
       process.exit(1);
     }
@@ -354,8 +361,8 @@ async function runAudit() {
               generationConfig: { maxOutputTokens: 5 }
             }),
             // NEW generous safety net (no timeout existed before): a hung Gemini call
-            // used to stall the job until GitHub's 10-min cancel, and cancelled jobs
-            // skip the "Mark Failed" step - leaving the scan stuck in "running".
+            // used to stall the job until GitHub's 10-min cancel (audit.yml now marks a
+            // cancelled job failed, but the audit is still lost).
             // On abort, the catch below logs a warning and the audit CONTINUES.
             signal: AbortSignal.timeout(60000)
           }
@@ -1397,7 +1404,7 @@ async function runAudit() {
     console.log(`✅ Audit completed. True: ${trueMatchScore}%, Visual: ${visualMatchScore}%. ${allIssues.length} total issues found.`);
 
   } catch (error) {
-    console.error('❌ Audit failed:', error);
+    console.error('❌ Audit failed:', noUrls((error && error.stack) || error));
     if (error.message && error.message.includes('Abort')) {
       fs.writeFileSync('playwright-report/error-log.txt', error.message);
     } else {

@@ -5,29 +5,32 @@ on:
     inputs:
       scan_id:
         description: "Supabase Scan ID"
+        required: true
+      # The repo is public, and so are its run logs: the worker sends only scan_id and the
+      # first step fetches the rest from it. The inputs below are accepted (a worker still
+      # sending them must not get a 422) but never used.
+      url:
+        description: "Unused (fetched from the worker)"
         required: false
         default: ""
-      url:
-        description: "Target URL"
-        required: true
       session_id:
-        description: "Unique ID"
+        description: "Unused (fetched from the worker)"
         required: false
-        default: "manual-scan"
+        default: ""
       tokens_url:
-        description: "URL to design tokens JSON in Supabase Storage"
+        description: "Unused (fetched from the worker)"
         required: false
         default: ""
       figma_image_url:
-        description: "URL to Figma frame PNG in Supabase Storage"
+        description: "Unused (fetched from the worker)"
         required: false
         default: ""
       frame_name:
-        description: "Figma frame name"
+        description: "Unused (fetched from the worker)"
         required: false
         default: ""
       capture_base:
-        description: "Browser-capture artifact URL prefix (empty = normal cloud audit)"
+        description: "Unused (fetched from the worker)"
         required: false
         default: ""
       env:
@@ -53,39 +56,26 @@ jobs:
         with:
           node-version: "24"
 
-      - name: 🚦 Mark Running + Download Inputs (parallel)
+      - name: 🚦 Mark Running
+        env:
+          SID: ${{ github.event.inputs.scan_id }}
+          SB_URL: ${{ secrets.SUPABASE_URL }}
+          SB_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          if [ -n "${{ github.event.inputs.scan_id }}" ]; then
-            # Only a scan still waiting to start: a cancel from the plugin must stick
-            curl -sX PATCH "${{ secrets.SUPABASE_URL }}/rest/v1/scan_history?id=eq.${{ github.event.inputs.scan_id }}&audit_status=in.(processing,awaiting_capture)" \
-              -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-              -H "Content-Type: application/json" \
-              -H "Prefer: return=minimal" \
-              -d '{"audit_status": "running"}' &
-          fi
-          if [ -n "${{ github.event.inputs.tokens_url }}" ]; then
-            curl -sL "${{ github.event.inputs.tokens_url }}" -o tokens.json &
-          fi
-          if [ -n "${{ github.event.inputs.figma_image_url }}" ]; then
-            curl -sL "${{ github.event.inputs.figma_image_url }}" -o figma-frame.png &
-          fi
-          # Browser-capture artifacts (login/VPN path): all share one prefix.
-          if [ -n "${{ github.event.inputs.capture_base }}" ]; then
-            B="${{ github.event.inputs.capture_base }}"
-            curl -sL "${B}report.json"       -o captured-report.json &
-            curl -sL "${B}shadow.json"       -o captured-shadow.json &
-            curl -sL "${B}live-blackout.png" -o live-blackout.png &
-            curl -sL "${B}live-clean.png"    -o live-clean.png &
-            curl -sL "${B}live-viewport.png" -o live-viewport.png &
-          fi
-          wait
-          # `|| true` so a missing optional file (e.g. captured-report.json on a normal
-          # cloud audit) doesn't make this the step's failing last command → false "Audit
-          # failed unexpectedly".
-          [ -f tokens.json ] && echo "Tokens: $(wc -c < tokens.json) bytes" || true
-          [ -f figma-frame.png ] && echo "Figma PNG: $(wc -c < figma-frame.png) bytes" || true
-          [ -f captured-report.json ] && echo "Captured report: $(wc -c < captured-report.json) bytes" || true
+          # Only a scan still waiting to start: a cancel from the plugin must stick
+          curl -sX PATCH "${SB_URL}/rest/v1/scan_history?id=eq.${SID}&audit_status=in.(processing,awaiting_capture)" \
+            -H "apikey: $SB_KEY" -H "Authorization: Bearer $SB_KEY" \
+            -H "Content-Type: application/json" -H "Prefer: return=minimal" \
+            -d '{"audit_status": "running"}'
+
+      # Website, frame name and signed file links come from the worker, never from the
+      # dispatch, and are never printed (the website is masked in every later step)
+      - name: 📥 Download Inputs
+        run: node fetch-inputs.js
+        env:
+          SCAN_ID: ${{ github.event.inputs.scan_id }}
+          WORKER_URL: ${{ secrets.UIMATCH_WORKER_URL }}
+          FINISH_SECRET: ${{ secrets.FINISH_SECRET }}
 
       # Single combined cache (was two separate cache steps = two sequential
       # restore round-trips). node_modules and the Playwright browser always
@@ -107,25 +97,12 @@ jobs:
           npm install playwright pixelmatch pngjs
           npx playwright install --with-deps chromium
 
-      # Captured mode (login/VPN): point the engine at the browser-captured artifacts.
-      # Set ONLY when capture_base is present, so normal cloud audits are untouched -
-      # the engine treats CAPTURED_REPORT being set as the switch into captured mode.
-      - name: 🧩 Configure Captured Mode
-        if: ${{ github.event.inputs.capture_base != '' }}
-        run: |
-          echo "CAPTURED_REPORT=captured-report.json" >> $GITHUB_ENV
-          echo "CAPTURED_SHADOW=captured-shadow.json" >> $GITHUB_ENV
-          echo "LIVE_SCREENSHOT=live-blackout.png" >> $GITHUB_ENV
-          echo "LIVE_SCREENSHOT_CLEAN=live-clean.png" >> $GITHUB_ENV
-          echo "LIVE_VIEWPORT=live-viewport.png" >> $GITHUB_ENV
-
       - name: 🔍 Run Audit Engine
         run: node engine.js
         env:
-          TARGET_URL: ${{ github.event.inputs.url }}
+          # TARGET_URL, FRAME_NAME and the captured-mode files come from 📥 Download Inputs
           TOKENS_FILE: tokens.json
           FIGMA_IMAGE: figma-frame.png
-          FRAME_NAME: ${{ github.event.inputs.frame_name }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SCAN_ID: ${{ github.event.inputs.scan_id }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -134,8 +111,7 @@ jobs:
       - name: 📸 Upload PDF Report to Supabase
         if: always()
         run: |
-          FINAL_ID="${{ github.event.inputs.session_id }}"
-          FINAL_ID="${FINAL_ID:-manual_run}"
+          FINAL_ID="${SESSION_ID:-manual_run}"
           if [ -f "playwright-report/visual-audit-diff.pdf" ]; then
             curl -sX POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/audit-results/${FINAL_ID}.pdf" \
               -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
