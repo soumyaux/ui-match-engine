@@ -182,6 +182,20 @@ jobs:
             [ -f "playwright-report/error-log.txt" ] && ERROR_MSG=$(head -c 500 playwright-report/error-log.txt)
             jq -nc --arg e "$ERROR_MSG" '{status: "failed", error_message: $e}' > finish.json
             jq -c '{audit_status: .status, error_message}' finish.json > direct.json
+            # Show the reason on the run page + as an annotation, so GitHub's failure email
+            # leads to it. This repo is public: scan id + reason only, web addresses hidden.
+            SAFE_MSG=$(printf '%s' "$ERROR_MSG" | sed -E 's#(https?://|www\.)[^[:space:]]+#[link hidden]#g; s#[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}#[email hidden]#g' | tr '\r\n' '  ' | head -c 400)
+            {
+              echo "## ❌ Audit failed"
+              echo ""
+              echo "**Scan ID:** \`${SID}\`"
+              echo ""
+              echo '**Reason:**'
+              echo '```'
+              printf '%s\n' "$SAFE_MSG"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Audit failed (scan ${SID})::${SAFE_MSG}"
           fi
           if [ -n "$WORKER_URL" ] && [ -n "$FINISH_SECRET" ] && \
              curl -sf --retry 2 --max-time 90 -X POST "${WORKER_URL%/}/api/scan/${SID}/finish" \
