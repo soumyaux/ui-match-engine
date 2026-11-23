@@ -581,6 +581,8 @@ function probePage(tokens) {
           if (isFullPageWrapper || isKnownWrapper) return;
         }
 
+        // A 0% opacity design layer draws nothing (older plugin versions still send it)
+        if (design.op === 0) return;
         const live = window.getComputedStyle(el);
         // Skip off-screen or invisible elements
         if (rect.width < 5 || rect.height < 5) return;
@@ -617,7 +619,8 @@ function probePage(tokens) {
           const diff = lv - dv, ad = Math.abs(diff);
           if (ad < (opt.tol ?? 0.5)) return;
           const small = ad <= (opt.smallMax ?? 2);
-          const big = ad > 8 || (Math.abs(dv) > 0 && ad / Math.abs(dv) > 0.25);
+          // High = clearly visible: at least 12px and at least 15% of the design value
+          const big = ad >= 12 && (dv === 0 || ad / Math.abs(dv) >= 0.15);
           fail(label, { prop, design: _r2(dv), live: _r2(lv), unit: 'px', diff: _r2(diff), small,
             severity: opt.severity || (small ? 'low' : big ? 'high' : 'medium'), confidence: opt.confidence || 'measured' });
         };
@@ -637,7 +640,7 @@ function probePage(tokens) {
         // ═══════════════════════════════════════
         if (role === 'text' || design.fs) {
           const fsNum = typeof design.fs === 'number' ? design.fs : null;
-          if (fsNum) px('Font Size', 'font-size', fsNum, parseFloat(live.fontSize));
+          if (fsNum) { const _lf = parseFloat(live.fontSize); px('Font Size', 'font-size', fsNum, _lf, Math.abs(_lf - fsNum) >= 2 ? { severity: 'high' } : {}); }
           if (design.ff && design.ff !== 'Mixed' && live.fontFamily) {
             performed++;
             const _figmaFF = design.ff.toLowerCase();
@@ -755,6 +758,15 @@ function probePage(tokens) {
             return { i, w, color: live['border' + s + 'Color'], drawn: w > 0 && st !== 'none' && st !== 'hidden' };
           });
           const _liveDrawn = _sides.filter(s => s.drawn);
+          // The same line on the same edge, drawn by a close parent (a table row under its cells)
+          const _parentDraws = (i) => {
+            const side = _sideNames[i], edge = side.toLowerCase();
+            for (let p = el.parentElement, n = 0; p && n < 3; p = p.parentElement, n++) {
+              const s = window.getComputedStyle(p), r = p.getBoundingClientRect();
+              if ((parseFloat(s['border' + side + 'Width']) || 0) > 0 && !/none|hidden/.test(s['border' + side + 'Style']) && Math.abs(r[edge] - rect[edge]) <= 2) return true;
+            }
+            return false;
+          };
           // Sides the design has: per-side weights (bws) if sent; a uniform stroke (numeric
           // bw) is all four; mixed weights (bw absent) → trust the sides the page draws.
           // bw alone isn't enough - Figma keeps a default weight on layers with no stroke.
@@ -766,7 +778,8 @@ function probePage(tokens) {
             // The design has a border and the page draws none - unless it draws the ring
             // another way (box-shadow / outline, e.g. Tailwind `ring`), which can't be compared
             const _ring = (live.boxShadow && live.boxShadow !== 'none') || (parseFloat(live.outlineWidth) > 0 && live.outlineStyle !== 'none');
-            if ((design.bc || _designSides.length > 0) && !_ring) {
+            const _byParent = Array.isArray(design.bws) && design.bws.some(w => w > 0) && design.bws.every((w, i) => !(w > 0) || _parentDraws(i));
+            if ((design.bc || _designSides.length > 0) && !_ring && !_byParent) {
               performed++;
               const w = typeof design.bw === 'number' ? design.bw : (_designSides.length ? _designWeight(_designSides[0]) : 1);
               fail('Border Width', { prop: 'border-width', design: w, live: 0, unit: 'px', diff: -w, severity: 'medium' });
@@ -776,6 +789,7 @@ function probePage(tokens) {
               const side = 'border-' + _sideNames[s.i].toLowerCase() + '-width';
               if (!s.drawn) {
                 performed++;
+                if (_parentDraws(s.i)) continue;
                 const w = _designWeight(s);
                 fail('Border Width', { prop: side, design: typeof w === 'number' ? w : 'border', live: 0, unit: 'px', severity: 'medium' });
               } else if (typeof _designWeight(s) === 'number') {
@@ -812,11 +826,37 @@ function probePage(tokens) {
         // SPACING PROPERTIES (containers only)
         // ═══════════════════════════════════════
         if (role === 'container' || design.pad || design.gap !== undefined) {
+          const _flowKids = () => [...el.children].filter(k => {
+            const s = window.getComputedStyle(k), r = k.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden' && !/absolute|fixed/.test(s.position);
+          }).map(k => k.getBoundingClientRect());
+          // Distance from the inside of this box's border to its content on one side
+          const _drawnInset = (side) => {
+            const kids = _flowKids();
+            if (!kids.length) return null;
+            const b = parseFloat(live['border' + side + 'Width']) || 0;
+            if (side === 'Top') return Math.min(...kids.map(r => r.top)) - rect.top - b;
+            if (side === 'Left') return Math.min(...kids.map(r => r.left)) - rect.left - b;
+            if (side === 'Bottom') return rect.bottom - Math.max(...kids.map(r => r.bottom)) - b;
+            return rect.right - Math.max(...kids.map(r => r.right)) - b;
+          };
+          // Distances between neighbouring items along the direction they are laid out in
+          const _drawnGaps = () => {
+            const kids = _flowKids();
+            if (kids.length < 2) return [];
+            const row = kids.every((r, i) => !i || r.left >= kids[i - 1].right - 1);
+            const col = kids.every((r, i) => !i || r.top >= kids[i - 1].bottom - 1);
+            if (row === col) return [];
+            return kids.slice(1).map((r, i) => row ? r.left - kids[i].right : r.top - kids[i].bottom);
+          };
           if (design.pad && Array.isArray(design.pad)) {
             const [pt, pr, pb, pl] = design.pad;
             [['Top', pt, live.paddingTop], ['Right', pr, live.paddingRight], ['Bottom', pb, live.paddingBottom], ['Left', pl, live.paddingLeft]]
               .forEach(([side, figma, lv]) => {
-                if (figma > 0) px('Padding ' + side, 'padding-' + side.toLowerCase(), figma, parseFloat(lv) || 0);
+                if (!(figma > 0)) return;
+                const css = parseFloat(lv) || 0, drawn = _drawnInset(side);
+                // Same distance on screen through a margin or a wrapper is not a difference
+                px('Padding ' + side, 'padding-' + side.toLowerCase(), figma, drawn !== null && Math.abs(drawn - figma) <= 1 ? figma : css);
               });
           }
           if (design.gap !== undefined) {
@@ -824,7 +864,12 @@ function probePage(tokens) {
             // row-gap in a column (the `gap` shorthand reads "row col")
             const _column = /flex/.test(live.display) && /column/.test(live.flexDirection);
             const g = _column ? live.rowGap : live.columnGap;
-            px('Gap', 'gap', design.gap, g === 'normal' ? 0 : parseFloat(g) || 0);
+            const css = g === 'normal' ? 0 : parseFloat(g) || 0;
+            // space-between/around/evenly: the container spreads the items, there is no set gap
+            if (!(/flex|grid/.test(live.display) && /space-/.test(live.justifyContent))) {
+              const drawn = _drawnGaps();
+              px('Gap', 'gap', design.gap, drawn.length && drawn.every(d => Math.abs(d - design.gap) <= 1) ? design.gap : css);
+            }
           }
         }
 
@@ -898,7 +943,27 @@ function probePage(tokens) {
           const t = (el.innerText || '').trim().replace(/\s+/g, ' ');
           return t ? t.slice(0, 60) : null;
         })();
-        const _meta = (subset) => Object.assign({}, _locator, summariseChecks(subset),
+        // A layer called "Default" or "Component 2" tells nobody where to look
+        const _shownName = (() => {
+          const clean = (s) => String(s || '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
+          const cell = el.closest?.('[role="gridcell"],[role="columnheader"],td,th');
+          if (cell && /^(default|table .*components?|(component|frame|group|instance|rectangle)( \d+)?)$/i.test(clean(_label))) {
+            const col = cell.getAttribute('aria-colindex');
+            const grid = cell.closest('[role="grid"],[role="treegrid"],table');
+            const head = col && grid ? grid.querySelector('[role="columnheader"][aria-colindex="' + col + '"]') : null;
+            const title = clean(head ? head.innerText : '').slice(0, 24);
+            if (cell.matches('[role="columnheader"],th')) return 'Table header: ' + (clean(cell.innerText).slice(0, 24) || title || 'column ' + (col || '?'));
+            const row = cell.closest('[aria-rowindex]')?.getAttribute('aria-rowindex');
+            return 'Table cell' + (title ? ': ' + title : col ? ': column ' + col : '') + (row ? ', row ' + row : '');
+          }
+          if (/^(default|(component|frame|group|instance|rectangle)( \d+)?)$/i.test(clean(_label))) {
+            const t = clean(_elText);
+            if (t && t.length <= 40) return t;
+            return tag === 'BUTTON' ? 'Button' : (getElementName(el) || _label);
+          }
+          return _label;
+        })();
+        const _meta = (subset) => Object.assign({}, _locator, { name: _shownName }, summariseChecks(subset),
           { selector: selectorBrowser(el), text: _elText, checks: subset });
         const _mergeInto = (existing, labels, subset) => {
           labels.forEach(e => { if (!existing.details.includes(e)) existing.details.push(e); });
